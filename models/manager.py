@@ -105,14 +105,18 @@ def _hf_model_present(repo_id: str) -> bool:
 
 def _deepface_present() -> bool:
     # Check by file presence — avoids importing onnxruntime which crashes in Anaconda shells
-    venv_site = Path(__file__).parent.parent / ".venv" / "Lib" / "site-packages"
-    if not venv_site.exists():
-        # Try relative to sys.prefix
-        import sys
-        venv_site = Path(sys.prefix) / "Lib" / "site-packages"
-    return (venv_site / "insightface").exists() and (
-        (venv_site / "onnxruntime").exists() or
-        (venv_site / "onnxruntime_gpu").exists()
+    import sys, sysconfig
+    # Use sysconfig to find the actual site-packages for the running interpreter
+    site = Path(sysconfig.get_path("purelib"))
+    if not site.exists():
+        # Fallback: search sys.path for a site-packages directory
+        for p in sys.path:
+            if "site-packages" in p and Path(p).exists():
+                site = Path(p)
+                break
+    return (site / "insightface").exists() and (
+        (site / "onnxruntime").exists() or
+        (site / "onnxruntime_gpu").exists()
     )
 
 

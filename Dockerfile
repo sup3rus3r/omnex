@@ -32,6 +32,9 @@ RUN pip install --no-cache-dir \
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# InsightFace + ONNX runtime (CPU — no CUDA in container)
+RUN pip install --no-cache-dir insightface>=0.7.3 onnxruntime>=1.19.0
+
 # Copy application code
 COPY api/        ./api/
 COPY ingestion/  ./ingestion/
