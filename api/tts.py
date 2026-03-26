@@ -1,8 +1,8 @@
 """
 Omnex — TTS Engine
 VibeVoice-Realtime-0.5B on GPU  → realtime streaming PCM (~300ms first token)
-                                   runs in an isolated subprocess to avoid
-                                   heap conflicts with onnxruntime-gpu/insightface
+                                   runs in a persistent isolated subprocess
+                                   (avoids heap conflicts with onnxruntime-gpu)
 Kokoro ONNX on CPU              → full WAV fallback
 
 /voice/speak  POST  { text, voice? }  → audio/wav (streaming or full)
@@ -11,9 +11,13 @@ Kokoro ONNX on CPU              → full WAV fallback
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import struct
+import subprocess
+import sys
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Generator
@@ -25,14 +29,142 @@ _KOKORO_DIR    = Path(os.getenv("OMNEX_DATA_PATH", "/data")) / "models" / "kokor
 _KOKORO_MODEL  = _KOKORO_DIR / "kokoro-v1.0.onnx"
 _KOKORO_VOICES = _KOKORO_DIR / "voices-v1.0.bin"
 
-# ── VibeVoice voices ──────────────────────────────────────────────────────────
+# ── VibeVoice config ──────────────────────────────────────────────────────────
 VIBEVOICE_VOICES      = ["Carter", "Davis", "Emma", "Frank", "Grace", "Mike"]
 VIBEVOICE_SAMPLE_RATE = 24000
+VIBEVOICE_VOICE       = os.getenv("VIBEVOICE_VOICE", "Emma")
+KOKORO_VOICE          = os.getenv("TTS_KOKORO_VOICE", "af_heart")
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
-VIBEVOICE_VOICE = os.getenv("VIBEVOICE_VOICE", "Emma")
-KOKORO_VOICE    = os.getenv("TTS_KOKORO_VOICE", "af_heart")
 
+# ── Persistent VibeVoice worker process ───────────────────────────────────────
+
+# Protocol (over stdin/stdout of the worker):
+#   Request  (main → worker): JSON line  {"text": "...", "voice": "Emma"}\n
+#   Response (worker → main): binary frames, each prefixed with a 4-byte LE
+#                              uint32 length. Length 0 = end of stream.
+
+_WORKER_SCRIPT = """
+import sys, os, json, struct
+import numpy as np
+
+model_path = os.getenv("VIBEVOICE_MODEL_PATH", "/opt/vibevoice")
+from streamingtts import StreamingTTS
+model = StreamingTTS(model_path)
+
+# Signal ready
+sys.stdout.buffer.write(b"READY\\n")
+sys.stdout.buffer.flush()
+
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    req   = json.loads(line)
+    text  = req["text"]
+    voice = req["voice"]
+    try:
+        for chunk in model.stream(text, voice=voice):
+            pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
+            data = pcm.tobytes()
+            sys.stdout.buffer.write(struct.pack("<I", len(data)))
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+    except Exception as e:
+        pass
+    # End-of-stream sentinel
+    sys.stdout.buffer.write(struct.pack("<I", 0))
+    sys.stdout.buffer.flush()
+"""
+
+
+class _VibeVoiceWorker:
+    """
+    A single long-lived subprocess running the VibeVoice model.
+    The model is loaded once. Requests are serialised — one at a time.
+    """
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._ready = False
+
+    def _spawn(self) -> bool:
+        env = {**os.environ, "PYTHONPATH": "/app"}
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, "-c", _WORKER_SCRIPT],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            # Wait for READY signal (model loaded)
+            line = self._proc.stdout.readline()
+            if line.strip() == b"READY":
+                log.info("[vibevoice] worker ready")
+                self._ready = True
+                return True
+            else:
+                log.error(f"[vibevoice] unexpected startup output: {line}")
+                self._proc.kill()
+                self._proc = None
+                return False
+        except Exception as e:
+            log.error(f"[vibevoice] failed to spawn worker: {e}")
+            self._proc = None
+            return False
+
+    def _is_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def stream(self, text: str, voice: str) -> Generator[bytes, None, None]:
+        with self._lock:
+            # Spawn or respawn if dead
+            if not self._is_alive():
+                self._ready = False
+                log.info("[vibevoice] spawning worker process")
+                if not self._spawn():
+                    raise RuntimeError("VibeVoice worker failed to start")
+
+            # Send request
+            req = json.dumps({"text": text, "voice": voice}) + "\n"
+            self._proc.stdin.write(req.encode())
+            self._proc.stdin.flush()
+
+            # Read framed PCM chunks until sentinel
+            while True:
+                header = self._proc.stdout.read(4)
+                if len(header) < 4:
+                    break
+                length = struct.unpack("<I", header)[0]
+                if length == 0:
+                    break
+                data = self._proc.stdout.read(length)
+                if not data:
+                    break
+                yield data
+
+    def shutdown(self):
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+            self._proc.wait(timeout=5)
+
+
+# Module-level singleton — created lazily on first TTS request
+_worker: _VibeVoiceWorker | None = None
+_worker_init_lock = threading.Lock()
+
+
+def _get_worker() -> _VibeVoiceWorker:
+    global _worker
+    if _worker is None:
+        with _worker_init_lock:
+            if _worker is None:
+                _worker = _VibeVoiceWorker()
+    return _worker
+
+
+# ── Capability checks ─────────────────────────────────────────────────────────
 
 def _gpu_available() -> bool:
     try:
@@ -43,13 +175,13 @@ def _gpu_available() -> bool:
 
 
 def _vibevoice_installed() -> bool:
-    """Check if the VibeVoice package is installed without importing it."""
     import importlib.util
     return importlib.util.find_spec("streamingtts") is not None
 
 
+# ── WAV header ────────────────────────────────────────────────────────────────
+
 def _wav_header(sample_rate: int, num_channels: int = 1, bits: int = 16) -> bytes:
-    """Return a WAV header for a streaming (unknown length) file."""
     data_size   = 0xFFFFFFFF
     header_size = 44
     fmt_size    = 16
@@ -66,73 +198,15 @@ def _wav_header(sample_rate: int, num_channels: int = 1, bits: int = 16) -> byte
     )
 
 
-# ── VibeVoice subprocess worker ───────────────────────────────────────────────
+# ── VibeVoice stream ──────────────────────────────────────────────────────────
 
-def _vibevoice_worker_main():
-    """
-    Runs in an isolated subprocess. Reads (text, voice) from stdin as a JSON
-    line, writes raw PCM int16 bytes to stdout, then exits.
-    Heap corruption stays contained in this process.
-    """
-    import sys, json
-    import numpy as np
-
-    line = sys.stdin.readline()
-    req  = json.loads(line)
-    text  = req["text"]
-    voice = req["voice"]
-
-    model_path = os.getenv("VIBEVOICE_MODEL_PATH", "/opt/vibevoice")
-    from streamingtts import StreamingTTS
-    model = StreamingTTS(model_path)
-
-    for chunk in model.stream(text, voice=voice):
-        pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
-        sys.stdout.buffer.write(pcm.tobytes())
-        sys.stdout.buffer.flush()
-
-
-def _stream_vibevoice_subprocess(text: str, voice: str) -> Generator[bytes, None, None]:
-    """
-    Spawn an isolated subprocess for VibeVoice to avoid heap corruption
-    contaminating the main API process.
-    """
-    import subprocess, json, sys
-
+def _stream_vibevoice(text: str, voice: str) -> Generator[bytes, None, None]:
     if voice not in VIBEVOICE_VOICES:
         voice = VIBEVOICE_VOICE
 
+    worker = _get_worker()
     yield _wav_header(VIBEVOICE_SAMPLE_RATE)
-
-    cmd = [sys.executable, "-c",
-           "from api.tts import _vibevoice_worker_main; _vibevoice_worker_main()"]
-
-    env = {**os.environ, "PYTHONPATH": "/app"}
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-
-    try:
-        payload = json.dumps({"text": text, "voice": voice}) + "\n"
-        proc.stdin.write(payload.encode())
-        proc.stdin.close()
-
-        while True:
-            chunk = proc.stdout.read(4096)
-            if not chunk:
-                break
-            yield chunk
-
-        proc.wait(timeout=60)
-    except Exception as e:
-        log.error(f"VibeVoice subprocess failed: {e}")
-        proc.kill()
-        raise
+    yield from worker.stream(text, voice)
 
 
 # ── Kokoro ────────────────────────────────────────────────────────────────────
@@ -171,12 +245,8 @@ def _stream_kokoro(text: str, voice: str) -> Generator[bytes, None, None]:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def synthesize_stream(text: str, voice: str | None = None) -> Generator[bytes, None, None]:
-    """
-    Yield WAV header + PCM chunks.
-    Uses VibeVoice (subprocess) on GPU, Kokoro on CPU.
-    """
     if _gpu_available() and _vibevoice_installed():
-        yield from _stream_vibevoice_subprocess(text, voice or VIBEVOICE_VOICE)
+        yield from _stream_vibevoice(text, voice or VIBEVOICE_VOICE)
     else:
         yield from _stream_kokoro(text, voice or KOKORO_VOICE)
 
