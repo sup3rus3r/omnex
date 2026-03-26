@@ -146,7 +146,7 @@ def _delete_one(source_path: str) -> None:
     """Remove all chunks belonging to the deleted file from Mongo + LEANN."""
     try:
         from storage.mongo import get_db
-        from storage.leann_store import IndexName, remove_vector
+        from storage.leann_store import IndexName, delete_vector
 
         db = get_db()
         chunks = list(db["chunks"].find({"source_path": source_path}, {"_id": 1, "leann_id": 1, "file_type": 1}))
@@ -170,7 +170,7 @@ def _delete_one(source_path: str) -> None:
             if leann_id is not None:
                 index = _index_map.get(file_type, IndexName.TEXT)
                 try:
-                    remove_vector(index, leann_id)
+                    delete_vector(index, leann_id)
                 except Exception:
                     pass  # vector may already be gone
 

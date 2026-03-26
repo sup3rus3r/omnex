@@ -60,18 +60,30 @@ RUN pip install --no-cache-dir \
 RUN grep -vE "^torch(vision|audio)?[=><!]" requirements.txt > /tmp/req_notorch.txt \
     && pip install --no-cache-dir -r /tmp/req_notorch.txt
 
-# InsightFace + ONNX GPU runtime
-RUN pip install --no-cache-dir insightface>=0.7.3 onnxruntime-gpu>=1.19.0
-
+# InsightFace
+RUN pip install --no-cache-dir insightface>=0.7.3
 
 # VibeVoice-Realtime-0.5B — realtime streaming TTS (~300ms first token)
 # Runs in an isolated subprocess at runtime to avoid heap conflicts with onnxruntime-gpu
-RUN git clone --depth 1 https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B /opt/vibevoice \
+# Clone GitHub repo — HuggingFace repo has no pyproject.toml
+# We install the package deps via pyproject.toml extras, then import directly from the repo.
+RUN git clone --depth 1 https://github.com/microsoft/VibeVoice.git /opt/vibevoice \
     && pip install --no-cache-dir -e "/opt/vibevoice[streamingtts]" \
     || echo "VibeVoice install failed — will fall back to Kokoro at runtime"
 
 # usearch — compressed file-based vector index (i8 quantization, replaces leann)
 RUN pip install --no-cache-dir usearch>=2.9.0
+
+# ── ONNX Runtime deduplication ────────────────────────────────────────────────
+# Several packages (kokoro-onnx, insightface, streamingtts) pull in onnxruntime
+# (CPU) as a transitive dependency. Having BOTH onnxruntime (CPU) AND
+# onnxruntime-gpu loaded in the same process causes glibc heap corruption
+# (double-free / corrupted size vs prev_size) from conflicting native malloc
+# implementations in their shared libraries.
+# Fix: install onnxruntime-gpu LAST, then forcibly remove the CPU package so
+# only one ONNX Runtime .so exists on the Python path.
+RUN pip install --no-cache-dir onnxruntime-gpu>=1.19.0 \
+    && pip uninstall -y onnxruntime 2>/dev/null || true
 
 # Copy application code
 COPY api/        ./api/
@@ -87,6 +99,8 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/data/models/huggingface
 ENV WHISPER_CACHE=/data/models/whisper
+ENV VIBEVOICE_REPO_PATH=/opt/vibevoice
+ENV VIBEVOICE_MODEL_ID=microsoft/VibeVoice-Realtime-0.5B
 
 EXPOSE 8000
 

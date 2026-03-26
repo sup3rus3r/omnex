@@ -30,10 +30,16 @@ _KOKORO_MODEL  = _KOKORO_DIR / "kokoro-v1.0.onnx"
 _KOKORO_VOICES = _KOKORO_DIR / "voices-v1.0.bin"
 
 # ── VibeVoice config ──────────────────────────────────────────────────────────
+# Voice names map to .pt files in /opt/vibevoice/demo/voices/streaming_model/
+# e.g. "Emma" → "en-Emma_woman.pt", "Carter" → "en-Carter_man.pt"
 VIBEVOICE_VOICES      = ["Carter", "Davis", "Emma", "Frank", "Grace", "Mike"]
 VIBEVOICE_SAMPLE_RATE = 24000
 VIBEVOICE_VOICE       = os.getenv("VIBEVOICE_VOICE", "Emma")
 KOKORO_VOICE          = os.getenv("TTS_KOKORO_VOICE", "af_heart")
+
+# Path to the cloned VibeVoice GitHub repo (set in docker-compose / Dockerfile)
+_VIBEVOICE_REPO = os.getenv("VIBEVOICE_REPO_PATH", "/opt/vibevoice")
+_VIBEVOICE_HF   = os.getenv("VIBEVOICE_MODEL_ID", "microsoft/VibeVoice-Realtime-0.5B")
 
 
 # ── Persistent VibeVoice worker process ───────────────────────────────────────
@@ -43,34 +49,159 @@ KOKORO_VOICE          = os.getenv("TTS_KOKORO_VOICE", "af_heart")
 #   Response (worker → main): binary frames, each prefixed with a 4-byte LE
 #                              uint32 length. Length 0 = end of stream.
 
-_WORKER_SCRIPT = """
-import sys, os, json, struct
+_WORKER_SCRIPT = r"""
+import sys, os, json, struct, copy, traceback
+import torch
 import numpy as np
 
-model_path = os.getenv("VIBEVOICE_MODEL_PATH", "/opt/vibevoice")
-from streamingtts import StreamingTTS
-model = StreamingTTS(model_path)
+repo_path  = os.getenv("VIBEVOICE_REPO_PATH", "/opt/vibevoice")
+model_id   = os.getenv("VIBEVOICE_MODEL_ID",  "microsoft/VibeVoice-Realtime-0.5B")
+voices_dir = os.path.join(repo_path, "demo", "voices", "streaming_model")
 
-# Signal ready
-sys.stdout.buffer.write(b"READY\\n")
+# Add the repo to sys.path so vibevoice package is importable
+if repo_path not in sys.path:
+    sys.path.insert(0, repo_path)
+
+from vibevoice.modular.modeling_vibevoice_streaming_inference import (
+    VibeVoiceStreamingForConditionalGenerationInference,
+)
+from vibevoice.processor.vibevoice_streaming_processor import VibeVoiceStreamingProcessor
+from vibevoice.modular.streamer import AudioStreamer
+
+# ── Voice preset loader ───────────────────────────────────────────────────────
+
+def _load_voice_presets():
+    """Scan voices dir and build name → path map (case-insensitive partial match)."""
+    import glob
+    presets = {}
+    if os.path.isdir(voices_dir):
+        for pt in glob.glob(os.path.join(voices_dir, "*.pt")):
+            stem = os.path.splitext(os.path.basename(pt))[0].lower()
+            presets[stem] = pt
+    return presets
+
+_voice_presets = _load_voice_presets()
+
+def _resolve_voice(name: str) -> str:
+    """Return the .pt file path for the given voice name."""
+    key = name.lower()
+    # exact match
+    if key in _voice_presets:
+        return _voice_presets[key]
+    # partial match (e.g. "emma" matches "en-emma_woman")
+    matches = [p for k, p in _voice_presets.items() if key in k]
+    if matches:
+        return matches[0]
+    # fallback to first available
+    if _voice_presets:
+        return next(iter(_voice_presets.values()))
+    raise RuntimeError(f"No voice presets found in {voices_dir}")
+
+# ── Model loading ─────────────────────────────────────────────────────────────
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+try:
+    processor = VibeVoiceStreamingProcessor.from_pretrained(model_id)
+    if device == "cuda":
+        model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            attn_implementation="flash_attention_2",
+        )
+    else:
+        model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
+            model_id,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+            attn_implementation="sdpa",
+        )
+    model.eval()
+    model.set_ddpm_inference_steps(num_steps=5)
+    _model_ok = True
+except Exception as e:
+    sys.stderr.write(f"[vibevoice-worker] model load failed: {e}\n")
+    sys.stderr.flush()
+    _model_ok = False
+
+# Signal ready (or failure)
+if _model_ok:
+    sys.stdout.buffer.write(b"READY\n")
+else:
+    sys.stdout.buffer.write(b"FAILED\n")
 sys.stdout.buffer.flush()
+
+if not _model_ok:
+    sys.exit(1)
+
+# ── Request loop ──────────────────────────────────────────────────────────────
 
 while True:
     line = sys.stdin.readline()
     if not line:
         break
-    req   = json.loads(line)
-    text  = req["text"]
-    voice = req["voice"]
     try:
-        for chunk in model.stream(text, voice=voice):
-            pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
-            data = pcm.tobytes()
+        req   = json.loads(line)
+        text  = req["text"]
+        voice = req.get("voice", "Emma")
+
+        voice_path = _resolve_voice(voice)
+        all_prefilled = torch.load(voice_path, map_location=device, weights_only=False)
+
+        inputs = processor.process_input_with_cached_prompt(
+            text=text,
+            cached_prompt=all_prefilled,
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        for k, v in inputs.items():
+            if torch.is_tensor(v):
+                inputs[k] = v.to(device)
+
+        streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=60.0)
+
+        import threading as _threading
+
+        def _generate():
+            try:
+                model.generate(
+                    **inputs,
+                    max_new_tokens=None,
+                    cfg_scale=1.5,
+                    tokenizer=processor.tokenizer,
+                    generation_config={"do_sample": False},
+                    verbose=False,
+                    all_prefilled_outputs=copy.deepcopy(all_prefilled),
+                    streamer=streamer,
+                )
+            except Exception as exc:
+                sys.stderr.write(f"[vibevoice-worker] generate error: {exc}\n")
+                sys.stderr.flush()
+            finally:
+                streamer.end()
+
+        t = _threading.Thread(target=_generate, daemon=True)
+        t.start()
+
+        # Stream audio chunks out via framed binary protocol
+        for chunk in streamer.get_stream(0):
+            if chunk is None:
+                break
+            # chunk is a float tensor — convert to int16 PCM
+            pcm = (torch.clamp(chunk.float(), -1.0, 1.0) * 32767).short()
+            data = pcm.numpy().tobytes()
             sys.stdout.buffer.write(struct.pack("<I", len(data)))
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
+
+        t.join()
+
     except Exception as e:
-        pass
+        sys.stderr.write(f"[vibevoice-worker] request error: {e}\n{traceback.format_exc()}\n")
+        sys.stderr.flush()
+
     # End-of-stream sentinel
     sys.stdout.buffer.write(struct.pack("<I", 0))
     sys.stdout.buffer.flush()
@@ -89,23 +220,29 @@ class _VibeVoiceWorker:
         self._ready = False
 
     def _spawn(self) -> bool:
-        env = {**os.environ, "PYTHONPATH": "/app"}
+        env = {
+            **os.environ,
+            "PYTHONPATH": f"/app:{_VIBEVOICE_REPO}",
+            "VIBEVOICE_REPO_PATH": _VIBEVOICE_REPO,
+            "VIBEVOICE_MODEL_ID":  _VIBEVOICE_HF,
+        }
         try:
             self._proc = subprocess.Popen(
                 [sys.executable, "-c", _WORKER_SCRIPT],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 env=env,
             )
-            # Wait for READY signal (model loaded)
+            # Wait for READY signal (model loaded — can take 30-60s on first run)
             line = self._proc.stdout.readline()
             if line.strip() == b"READY":
                 log.info("[vibevoice] worker ready")
                 self._ready = True
                 return True
             else:
-                log.error(f"[vibevoice] unexpected startup output: {line}")
+                stderr = self._proc.stderr.read(2048) if self._proc.stderr else b""
+                log.error(f"[vibevoice] worker startup failed: {line!r}\n{stderr.decode(errors='replace')}")
                 self._proc.kill()
                 self._proc = None
                 return False
@@ -175,8 +312,9 @@ def _gpu_available() -> bool:
 
 
 def _vibevoice_installed() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("streamingtts") is not None
+    """Check that the VibeVoice repo is present and importable."""
+    repo = Path(_VIBEVOICE_REPO)
+    return (repo / "vibevoice" / "modular" / "modeling_vibevoice_streaming_inference.py").exists()
 
 
 # ── WAV header ────────────────────────────────────────────────────────────────

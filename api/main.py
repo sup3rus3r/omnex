@@ -17,12 +17,14 @@ from api.routes import query, chunks, ingest, identity, setup, mcp, tts, timelin
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import threading
     from storage.mongo import get_db
     from api.tunnel import start_tunnel
     from api.routes.ingest import restore_watches
     get_db()
     start_tunnel(port=8000)
-    restore_watches()
+    # Restore watches in background — don't block startup
+    threading.Thread(target=restore_watches, daemon=True, name="omnex-restore-watches").start()
     yield
 
 

@@ -32,7 +32,8 @@ services:
       HF_DATASETS_OFFLINE: "0"
       GPU_ENABLED: "${GPU_ENABLED:-false}"
       VIBEVOICE_VOICE: "${VIBEVOICE_VOICE:-Emma}"
-      VIBEVOICE_MODEL_PATH: /opt/vibevoice
+      VIBEVOICE_REPO_PATH: /opt/vibevoice
+      VIBEVOICE_MODEL_ID: microsoft/VibeVoice-Realtime-0.5B
       LOG_LEVEL: INFO
       API_HOST: 0.0.0.0
       API_PORT: "8000"
@@ -48,9 +49,9 @@ services:
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      timeout: 15s
+      retries: 8
+      start_period: 60s
 
   # ── Next.js Frontend ───────────────────────────────────────────────────────
   interface:
