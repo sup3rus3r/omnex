@@ -57,6 +57,12 @@ def _ensure_indexes(db: Database) -> None:
     sessions.create_index([("session_id", ASCENDING)], unique=True)
     sessions.create_index([("updated_at", DESCENDING)])
 
+    agents = db["agents"]
+    agents.create_index([("name", ASCENDING)], unique=True)
+
+    # Index agent_id on chunks for filtering agent observations
+    chunks.create_index([("metadata.agent_id", ASCENDING)], sparse=True)
+
 
 # ── Chunk operations ──────────────────────────────────────────────────────────
 

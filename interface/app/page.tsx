@@ -86,7 +86,7 @@ export default function Home() {
   const [focused,       setFocused]       = useState(false)
   const [sessionId,     setSessionId]     = useState<string | null>(null)
   const [streamingText, setStreamingText] = useState('')
-  const [ingestToast,   setIngestToast]   = useState<{path: string, pct: number} | null>(null)
+  const [ingestToast,   setIngestToast]   = useState<{path: string, pct: number, eta: number | null, fpm: number | null} | null>(null)
   const [expandNudge,   setExpandNudge]   = useState(false)
   const [nudgeDismissed, setNudgeDismissed] = useState(false)
   const inputRef       = useRef<HTMLTextAreaElement>(null)
@@ -191,7 +191,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
           if (active && active.total_files > 0) {
             const pct = Math.round((active.processed / active.total_files) * 100)
             const name = active.source_path?.split(/[/\\]/).pop() || active.source_path
-            setIngestToast({ path: name, pct })
+            setIngestToast({ path: name, pct, eta: active.eta_seconds ?? null, fpm: active.files_per_minute ?? null })
           } else {
             setIngestToast(null)
             // Show drive expansion nudge if index has something but looks like just one folder
@@ -962,6 +962,129 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
           <IdentityManager onClose={() => { setShowIdentity(false); setView('recall') }} />
         )}
       </AnimatePresence>
+
+      {/* ── Ingestion progress toast ─────────────────────────────────── */}
+      <AnimatePresence>
+        {ingestToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.96 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            style={{
+              position: 'fixed', bottom: 28, right: 28, zIndex: 100,
+              background: 'rgba(10,10,15,0.96)', backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(124,106,247,0.25)', borderRadius: 14,
+              padding: '12px 16px', minWidth: 260, maxWidth: 340,
+              boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+                style={{ flexShrink: 0 }}
+              >
+                <Loader2 size={13} color="#7c6af7" />
+              </motion.div>
+              <span style={{ fontSize: 12, color: '#e8e8f0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                Indexing <span style={{ color: '#a78bfa' }}>{ingestToast.path}</span>
+              </span>
+              <span style={{ fontSize: 11, color: '#505068', fontFamily: 'JetBrains Mono, monospace', flexShrink: 0 }}>
+                {ingestToast.pct}%
+              </span>
+            </div>
+            {/* Progress bar */}
+            <div style={{ height: 3, borderRadius: 2, background: 'rgba(124,106,247,0.12)', overflow: 'hidden', marginBottom: 6 }}>
+              <motion.div
+                animate={{ width: `${ingestToast.pct}%` }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
+                style={{ height: '100%', background: 'linear-gradient(90deg, #7c6af7, #a78bfa)', borderRadius: 2 }}
+              />
+            </div>
+            {/* ETA row */}
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 10, color: '#383850' }}>
+                {ingestToast.eta != null
+                  ? ingestToast.eta > 60
+                    ? `~${Math.round(ingestToast.eta / 60)} min remaining`
+                    : `~${ingestToast.eta}s remaining`
+                  : 'Calculating…'}
+              </span>
+              {ingestToast.fpm != null && (
+                <span style={{ fontSize: 10, color: '#252540', fontFamily: 'JetBrains Mono, monospace' }}>
+                  {ingestToast.fpm} files/min
+                </span>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Drive expansion nudge ────────────────────────────────────── */}
+      <AnimatePresence>
+        {expandNudge && !nudgeDismissed && !ingestToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.96 }}
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            style={{
+              position: 'fixed', bottom: 28, right: 28, zIndex: 100,
+              background: 'rgba(10,10,15,0.96)', backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(124,106,247,0.2)', borderRadius: 14,
+              padding: '14px 16px', minWidth: 280, maxWidth: 340,
+              boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                background: 'rgba(124,106,247,0.1)', border: '1px solid rgba(124,106,247,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Database size={13} color="#a78bfa" />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#e8e8f0', marginBottom: 4 }}>
+                  Expand your memory
+                </div>
+                <div style={{ fontSize: 11, color: '#505068', lineHeight: 1.6 }}>
+                  Add more folders to give Omnex a fuller picture — photos, documents, code, audio.
+                </div>
+              </div>
+              <button
+                onClick={() => { setNudgeDismissed(true); setExpandNudge(false) }}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: '#383850', flexShrink: 0 }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button
+                onClick={() => { setNudgeDismissed(true); setExpandNudge(false); setView('ingest') }}
+                style={{
+                  flex: 1, padding: '6px 0', borderRadius: 8,
+                  background: 'rgba(124,106,247,0.12)', border: '1px solid rgba(124,106,247,0.25)',
+                  color: '#a78bfa', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Add folders
+              </button>
+              <button
+                onClick={() => { setNudgeDismissed(true); setExpandNudge(false) }}
+                style={{
+                  padding: '6px 14px', borderRadius: 8,
+                  background: 'transparent', border: '1px solid #1a1a2e',
+                  color: '#505068', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -1441,7 +1564,10 @@ function RemoteAccessPanel({ api }: { api: string }) {
     mcpServers: {
       omnex: {
         url:     `${url}/mcp`,
-        headers: { "X-API-Key": apiKey },
+        headers: {
+          "X-API-Key":  apiKey,
+          "X-Agent-ID": "YOUR_AGENT_ID",
+        },
       }
     }
   }, null, 2) : ''
@@ -1556,7 +1682,12 @@ function RemoteAccessPanel({ api }: { api: string }) {
               </button>
             </div>
             <pre style={{ fontSize: 11, color: '#34d399', margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{mcpConfig}</pre>
-            <p style={{ fontSize: 11, color: '#383850', marginTop: 10 }}>Paste into your Claude Desktop / Cursor mcp.json config.</p>
+            <p style={{ fontSize: 11, color: '#383850', marginTop: 10, lineHeight: 1.6 }}>
+              Paste into your Claude Desktop / Cursor mcp.json config.<br />
+              Replace <code style={{ color: '#a78bfa' }}>YOUR_AGENT_ID</code> with the ID returned from{' '}
+              <code style={{ color: '#a78bfa' }}>POST {url}/agents</code>.<br />
+              Tools available: <code style={{ color: '#505068' }}>omnex_search</code> · <code style={{ color: '#505068' }}>omnex_remember</code> · <code style={{ color: '#505068' }}>omnex_stats</code>
+            </p>
           </div>
         </>
       )}
@@ -1766,6 +1897,167 @@ function MicOrb({
         <Mic size={15} color={color} />
       )}
     </motion.button>
+  )
+}
+
+/* ── Empty Index State — shown when no data has been ingested yet ───────────── */
+function EmptyIndexState({ onIngest }: { onIngest: () => void }) {
+  return (
+    <div style={{
+      flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '0 40px', minHeight: '60vh', textAlign: 'center',
+    }}>
+      {/* Icon */}
+      <motion.div
+        animate={{ scale: [1, 1.04, 1], opacity: [0.6, 1, 0.6] }}
+        transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
+        style={{
+          width: 64, height: 64, borderRadius: 20, marginBottom: 28,
+          background: 'radial-gradient(circle at 35% 30%, rgba(124,106,247,0.3) 0%, rgba(5,5,7,0.9) 100%)',
+          border: '1px solid rgba(124,106,247,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 0 32px rgba(124,106,247,0.12)',
+        }}
+      >
+        <Database size={28} color="#7c6af7" strokeWidth={1.4} />
+      </motion.div>
+
+      <h2 style={{ fontSize: 22, fontWeight: 600, color: '#e8e8f0', marginBottom: 10, letterSpacing: '-0.01em' }}>
+        Your memory is empty
+      </h2>
+      <p style={{ fontSize: 14, color: '#505068', lineHeight: 1.7, maxWidth: 420, marginBottom: 32 }}>
+        Omnex has nothing to recall yet. Drop in a folder of documents, photos, audio, video, or code and let it index everything automatically.
+      </p>
+
+      {/* What you can index */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 32, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {[
+          { icon: <FileText size={12} />, label: 'Documents & PDFs', color: '#fbbf24' },
+          { icon: <Image size={12} />,    label: 'Photos',           color: '#60a5fa' },
+          { icon: <Video size={12} />,    label: 'Videos',           color: '#a78bfa' },
+          { icon: <Music size={12} />,    label: 'Audio',            color: '#34d399' },
+          { icon: <Code2 size={12} />,    label: 'Code',             color: '#f87171' },
+        ].map(({ icon, label, color }) => (
+          <div key={label} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 12px', borderRadius: 20,
+            border: '1px solid #1a1a2e',
+            color: '#383850', fontSize: 12,
+          }}>
+            <span style={{ color }}>{icon}</span>
+            {label}
+          </div>
+        ))}
+      </div>
+
+      <motion.button
+        whileHover={{ scale: 1.03, boxShadow: '0 0 28px rgba(124,106,247,0.45)' }}
+        whileTap={{ scale: 0.97 }}
+        onClick={onIngest}
+        style={{
+          padding: '11px 28px', borderRadius: 14, cursor: 'pointer',
+          background: 'linear-gradient(145deg, #8b7cf8, #6b5ce7)',
+          border: '1px solid rgba(124,106,247,0.4)',
+          color: 'white', fontSize: 14, fontWeight: 500,
+          fontFamily: 'inherit', letterSpacing: '0.01em',
+          boxShadow: '0 0 20px rgba(124,106,247,0.3)',
+        }}
+      >
+        Open Ingest →
+      </motion.button>
+
+      <p style={{ fontSize: 11, color: '#252540', marginTop: 14 }}>
+        First ingestion loads models (~30s). Subsequent runs are fast.
+      </p>
+    </div>
+  )
+}
+
+/* ── Ready State — shown when index has data but no queries yet ─────────────── */
+function ReadyState({ stats, onQuery }: { stats: IndexStats | null, onQuery: (q: string) => void }) {
+  const total = stats?.total ?? 0
+
+  const suggestions = [
+    'What did I work on recently?',
+    'Show me photos from this year',
+    'Find documents about contracts',
+    'Who appears most in my photos?',
+    'What audio files do I have?',
+    'Show me code I wrote for authentication',
+  ]
+
+  return (
+    <div style={{
+      flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '0 40px', minHeight: '60vh', textAlign: 'center',
+    }}>
+      {/* Brain orb */}
+      <motion.div
+        animate={{
+          boxShadow: [
+            '0 0 20px rgba(124,106,247,0.15), 0 0 60px rgba(124,106,247,0.06)',
+            '0 0 36px rgba(167,139,250,0.3), 0 0 80px rgba(124,106,247,0.12)',
+            '0 0 20px rgba(124,106,247,0.15), 0 0 60px rgba(124,106,247,0.06)',
+          ]
+        }}
+        transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+        style={{
+          width: 72, height: 72, borderRadius: '50%', marginBottom: 28,
+          background: 'radial-gradient(circle at 35% 30%, rgba(192,168,255,0.25) 0%, rgba(124,106,247,0.1) 50%, rgba(5,5,7,0.9) 100%)',
+          border: '1px solid rgba(124,106,247,0.3)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <Brain size={32} color="#a78bfa" strokeWidth={1.2} />
+      </motion.div>
+
+      <h2 style={{ fontSize: 20, fontWeight: 600, color: '#e8e8f0', marginBottom: 8, letterSpacing: '-0.01em' }}>
+        {total.toLocaleString()} memories indexed
+      </h2>
+
+      {/* Per-type breakdown */}
+      {stats && (
+        <div style={{ display: 'flex', gap: 14, marginBottom: 32, flexWrap: 'wrap', justifyContent: 'center' }}>
+          {[
+            { count: stats.images,    label: 'photos',    color: '#60a5fa' },
+            { count: stats.documents, label: 'docs',      color: '#fbbf24' },
+            { count: stats.videos,    label: 'videos',    color: '#a78bfa' },
+            { count: stats.audio,     label: 'audio',     color: '#34d399' },
+            { count: stats.code,      label: 'code',      color: '#f87171' },
+          ].filter(t => t.count > 0).map(({ count, label, color }) => (
+            <div key={label} style={{ fontSize: 12, color: '#505068' }}>
+              <span style={{ color, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                {count.toLocaleString()}
+              </span>{' '}{label}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p style={{ fontSize: 13, color: '#383850', marginBottom: 20 }}>Try asking:</p>
+
+      {/* Suggestion chips */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', maxWidth: 560 }}>
+        {suggestions.map((s) => (
+          <motion.button
+            key={s}
+            whileHover={{ borderColor: 'rgba(124,106,247,0.4)', color: '#a78bfa' }}
+            whileTap={{ scale: 0.96 }}
+            onClick={() => onQuery(s)}
+            style={{
+              padding: '7px 14px', borderRadius: 20, cursor: 'pointer',
+              border: '1px solid #1a1a2e',
+              background: 'transparent',
+              color: '#505068', fontSize: 12,
+              fontFamily: 'inherit',
+              transition: 'all 0.15s',
+            }}
+          >
+            {s}
+          </motion.button>
+        ))}
+      </div>
+    </div>
   )
 }
 

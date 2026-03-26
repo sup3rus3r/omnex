@@ -132,6 +132,10 @@ Faces in photos are detected, clustered, and displayed in a dedicated People vie
 
 Browse your entire indexed history by year, month, and file type. Paginated grid view with type filters — a visual map of everything Omnex knows about, organised by when it happened.
 
+### Agent Memory Write API
+
+AI agents can store observations directly into the Omnex index. Register an agent via `POST /agents`, then push text memories via `POST /agents/observe` or the MCP `omnex_remember` tool. Every agent-written chunk is tagged with the agent identity and surfaces in search results under a dedicated "Agent Memory" section with a purple brain badge. The `X-Agent-ID` header in MCP config enables Claude Desktop, Cursor, and Windsurf to call `omnex_remember` directly.
+
 ### Delete & Manage Index
 
 Remove indexed data directly from the UI — delete a single chunk from the preview pane, or bulk-delete an entire source path from the Ingest panel's source manager. Full control over what stays in your memory.
@@ -301,7 +305,7 @@ The roadmap from today to where this ends up:
 | Stage | What it means | Status |
 |---|---|---|
 | **Personal memory** | Single user. All file types. Semantic recall across everything you have. | Now |
-| **Agent memory** | AI agents read and write to your Omnex index. Human and agent share one memory. | Phase 10 |
+| **Agent memory** | AI agents read and write to your Omnex index. Human and agent share one memory. | Now |
 | **Multi-agent substrate** | A swarm of specialised agents operates on a shared Omnex instance. Collective intelligence across a team or organisation. | Planned |
 | **Federated hivemind** | Multiple Omnex instances with opted-in sharing. Distributed semantic memory across users, devices, organisations. | Planned |
 | **AI OS layer** | Omnex mounts as a FUSE virtual filesystem. `People/Sarah/`, `Places/Cape Town/`, `By Year/2023/` are generated from the semantic index, not physical directories. The traditional file system is legacy. | Planned |
@@ -335,8 +339,8 @@ Omnex is the open alternative. Local. Private. Agentic-ready. Built for humans a
 | 12 | FUSE filesystem — write + sync | ✅ |
 | 13 | Local Whisper voice + always-listen VAD mode | ✅ |
 | 14 | People view + Timeline view + Delete UI + Settings | ✅ |
-| 15 | Progressive UX — cold start + drive expansion | 📋 Planned |
-| 16 | Multi-agent write API — agents store observations into index | 📋 Planned |
+| 15 | Progressive UX — cold start + drive expansion | ✅ |
+| 16 | Multi-agent write API — agents store observations into index | ✅ |
 
 Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Build plan: [docs/BUILDPLAN.md](docs/BUILDPLAN.md) · Implementation reference: [docs/TECHDOC.md](docs/TECHDOC.md)
 

@@ -106,15 +106,34 @@ async def ingest_status(path: str | None = None):
     Return ingestion progress.
     If path is provided, return status for that specific path.
     Otherwise return all active/completed ingestion records.
+    Includes eta_seconds and files_per_minute for running jobs.
     """
     from storage.mongo import get_db
+    from datetime import datetime, timezone
     db = get_db()
 
     query = {"source_path": path} if path else {}
     records = list(db["ingestion_state"].find(query, {"_id": 0}))
 
-    # Convert datetime objects to ISO strings for JSON serialisation
+    now = datetime.now(timezone.utc)
+
     for r in records:
+        # Compute ETA for running jobs
+        if r.get("status") == "running":
+            started = r.get("started_at")
+            processed = r.get("processed", 0)
+            total = r.get("total_files", 0)
+            if started and processed > 0 and total > processed:
+                elapsed = (now - started).total_seconds()
+                rate = processed / elapsed          # files/sec
+                remaining = total - processed
+                r["eta_seconds"]      = round(remaining / rate)
+                r["files_per_minute"] = round(rate * 60, 1)
+            else:
+                r["eta_seconds"]      = None
+                r["files_per_minute"] = None
+
+        # Convert datetime objects to ISO strings for JSON serialisation
         for k, v in r.items():
             if hasattr(v, "isoformat"):
                 r[k] = v.isoformat()

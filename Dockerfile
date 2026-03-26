@@ -1,5 +1,17 @@
-# Omnex API — Python 3.11 on Linux (no Anaconda DLL conflicts)
-FROM python:3.11-slim
+# Omnex API — CUDA 12.4 runtime base (provides libcudart.so.12 for Qwen TTS)
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+# Install Python 3.11
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default python/pip
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && python -m pip install --upgrade pip
 
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender1 \
+    # Audio processing (required by Kokoro TTS)
+    sox \
+    libsox-fmt-all \
     # Build tools for packages that need compilation
     build-essential \
     curl \
@@ -35,16 +50,17 @@ WORKDIR /app
 # Copy and install Python dependencies first (layer cache)
 COPY requirements.txt .
 
-# Install PyTorch with CUDA 12.4 support (matches host driver)
+# Install PyTorch + torchaudio with CUDA 12.4 support (must come from cu124 index)
 RUN pip install --no-cache-dir \
-    torch==2.5.1 torchvision==0.20.1 \
+    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
-# Install remaining dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install remaining dependencies (skip torch/torchvision/torchaudio — already installed above)
+RUN grep -vE "^torch(vision|audio)?[=><!]" requirements.txt > /tmp/req_notorch.txt \
+    && pip install --no-cache-dir -r /tmp/req_notorch.txt
 
-# InsightFace + ONNX runtime (CPU — no CUDA in container)
-RUN pip install --no-cache-dir insightface>=0.7.3 onnxruntime>=1.19.0
+# InsightFace + ONNX GPU runtime
+RUN pip install --no-cache-dir insightface>=0.7.3 onnxruntime-gpu>=1.19.0
 
 # usearch — compressed file-based vector index (i8 quantization, replaces leann)
 RUN pip install --no-cache-dir usearch>=2.9.0

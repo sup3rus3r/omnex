@@ -10,7 +10,7 @@ Supported methods:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from typing import Any
 
@@ -21,6 +21,34 @@ router = APIRouter()
 # ── MCP tool definitions ──────────────────────────────────────────────────────
 
 _TOOLS = [
+    {
+        "name": "omnex_remember",
+        "description": (
+            "Store a text observation or memory directly into the Omnex index. "
+            "Use this to persist information you want to recall later — facts, "
+            "decisions, summaries, user preferences, or anything worth remembering. "
+            "Requires OMNEX_AGENT_ID to be set in the MCP config headers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The observation or memory to store",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Label for where this came from (e.g. 'claude', 'cursor', 'research')",
+                    "default": "agent",
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Optional key-value metadata to attach",
+                },
+            },
+            "required": ["text"],
+        },
+    },
     {
         "name": "omnex_search",
         "description": (
@@ -72,14 +100,14 @@ class MCPRequest(BaseModel):
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("", dependencies=[Depends(require_api_key)])
-async def mcp_handler(req: MCPRequest):
+async def mcp_handler(req: MCPRequest, request: Request):
     """MCP JSON-RPC 2.0 endpoint."""
 
     if req.method == "tools/list":
         return _ok(req.id, {"tools": _TOOLS})
 
     if req.method == "tools/call":
-        return await _handle_tool_call(req)
+        return await _handle_tool_call(req, request)
 
     # MCP initialize handshake
     if req.method == "initialize":
@@ -95,10 +123,14 @@ async def mcp_handler(req: MCPRequest):
     return _error(req.id, -32601, f"Method not found: {req.method}")
 
 
-async def _handle_tool_call(req: MCPRequest) -> dict:
+async def _handle_tool_call(req: MCPRequest, request: Request) -> dict:
     params    = req.params or {}
     tool_name = params.get("name")
     arguments = params.get("arguments", {})
+
+    if tool_name == "omnex_remember":
+        agent_id = request.headers.get("X-Agent-ID", "")
+        return await _tool_remember(req.id, arguments, agent_id)
 
     if tool_name == "omnex_search":
         return await _tool_search(req.id, arguments)
@@ -107,6 +139,37 @@ async def _handle_tool_call(req: MCPRequest) -> dict:
         return await _tool_stats(req.id)
 
     return _error(req.id, -32602, f"Unknown tool: {tool_name}")
+
+
+async def _tool_remember(req_id: Any, args: dict, agent_id: str) -> dict:
+    from api.routes.agents import store_observation, ObservationRequest
+
+    text   = args.get("text", "").strip()
+    source = args.get("source", "agent")
+    meta   = args.get("metadata", {})
+
+    if not text:
+        return _error(req_id, -32602, "text is required")
+
+    if not agent_id:
+        return _error(req_id, -32602,
+            "X-Agent-ID header is required. Register an agent via POST /agents "
+            "and add X-Agent-ID to your MCP config headers.")
+
+    try:
+        result = await store_observation(ObservationRequest(
+            text=text,
+            source=source,
+            agent_id=agent_id,
+            metadata=meta,
+        ))
+    except Exception as e:
+        return _error(req_id, -32603, str(e))
+
+    return _ok(req_id, {
+        "content": [{"type": "text", "text": f"Stored: {text[:120]}{'…' if len(text) > 120 else ''}"}],
+        "isError": False,
+    })
 
 
 async def _tool_search(req_id: Any, args: dict) -> dict:

@@ -295,30 +295,31 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 
 ---
 
-### Phase 15 — Progressive UX — Cold Start + Drive Expansion
+### Phase 15 — Progressive UX — Cold Start + Drive Expansion ✓ COMPLETE
 **Goal:** First-run experience is frictionless. Empty index is welcoming, not blank.
 
-- [ ] Cold start screen — show model loading progress with friendly framing ("Building your intelligence…")
-- [ ] Empty index prompt — when 0 chunks, Recall view shows "Drop files to start" rather than blank chat
-- [ ] Drive expansion prompt — after first folder indexed, suggest expanding to full drive
-- [ ] Ingestion progress toasts — non-intrusive live updates while indexing runs in background
-- [ ] Estimated time display — "~12 minutes remaining" based on files/minute rate
+- [x] `EmptyIndexState` component — shown when `stats.total === 0`; animated database icon, type pills (docs/photos/video/audio/code), "Open Ingest →" CTA
+- [x] `ReadyState` component — shown when index has data but no queries yet; breathing brain orb, per-type counts, 6 suggestion chips that fire queries on click
+- [x] Drive expansion nudge — bottom-right toast after first folder indexed (< 5000 chunks); "Add folders" CTA + dismiss; session-scoped dismissal
+- [x] Ingestion progress toast — bottom-right overlay while any ingestion is running; animated progress bar + folder name + % complete; auto-hides when done
+- [x] `fetchStats` polls `/ingest/status` every 10s to drive toast + nudge state
+- [x] Estimated time display — `eta_seconds` + `files_per_minute` computed from `started_at` in `/ingest/status`; toast shows "~N min remaining" + files/min
 
-**Exit criteria:** New user installs → clear guided path from zero to first query result with no confusion.
+**Exit criteria:** New user installs → clear guided path from zero to first query result with no confusion. ✓
 
 ---
 
-### Phase 16 — Multi-Agent Write API
+### Phase 16 — Multi-Agent Write API ✓ COMPLETE
 **Goal:** AI agents can store observations and memories directly into the Omnex index.
 
-- [ ] `POST /ingest/observation` — agents push text memories: `{text, source, agent_id, metadata}`
-- [ ] Agent identity tag — every agent-written chunk carries `agent_id` + `agent_name` fields
-- [ ] `GET /query?agent_id=X` — filter results to a specific agent's observations
-- [ ] Agent registration — `POST /agents` to create named agent identities with API keys
-- [ ] MCP `remember` tool — Claude/GPT agents call this to persist observations
-- [ ] UI — agent-sourced results show agent badge in ResultGrid
+- [x] `POST /agents/observe` — agents push text memories: `{text, source, agent_id, metadata}`
+- [x] Agent identity tag — every agent-written chunk carries `agent_id` + `agent_name` in metadata, `file_type: "observation"`
+- [x] Agent registration — `POST /agents` creates named agent identities with auto-generated API keys
+- [x] `GET /agents` — list registered agents; `DELETE /agents/{id}` — remove agent
+- [x] MCP `omnex_remember` tool — agents call this via `X-Agent-ID` header to persist observations
+- [x] UI — observation results surface in ResultGrid under "Agent Memory" section with purple brain badge + agent name tag
 
-**Exit criteria:** Claude agent calls `remember("User prefers dark mode")` via MCP → stored in index → recalled on next session.
+**Exit criteria:** Claude agent calls `omnex_remember("User prefers dark mode")` via MCP → stored in index → recalled on next session. ✓
 
 ---
 

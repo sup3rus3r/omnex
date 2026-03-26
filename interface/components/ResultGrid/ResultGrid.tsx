@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { FileText, Code2, Music, Video, File, Play, Clock, MapPin } from 'lucide-react'
+import { FileText, Code2, Music, Video, File, Play, Clock, MapPin, Brain } from 'lucide-react'
 import { QueryResult } from '@/app/page'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
@@ -30,9 +30,10 @@ export default function ResultGrid({ results, onSelect, selected }: Props) {
     )
   }
 
-  const images    = results.filter((r) => r.file_type === 'image')
-  const videos    = results.filter((r) => r.file_type === 'video')
-  const nonVisual = results.filter((r) => r.file_type !== 'image' && r.file_type !== 'video')
+  const images       = results.filter((r) => r.file_type === 'image')
+  const videos       = results.filter((r) => r.file_type === 'video')
+  const observations = results.filter((r) => r.file_type === 'observation')
+  const nonVisual    = results.filter((r) => r.file_type !== 'image' && r.file_type !== 'video' && r.file_type !== 'observation')
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -158,6 +159,83 @@ export default function ResultGrid({ results, onSelect, selected }: Props) {
                     </div>
                   )}
                   <MatchBadge score={r.score} />
+                </motion.button>
+              )
+            })}
+          </motion.div>
+        </section>
+      )}
+
+      {/* Agent observations */}
+      {observations.length > 0 && (
+        <section>
+          <SectionLabel label="Agent Memory" count={observations.length} color="#a78bfa" />
+          <motion.div variants={container} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {observations.map((r) => {
+              const isSelected = selected?.chunk_id === r.chunk_id
+              const agentName  = (r.metadata?.agent_name as string) || 'Agent'
+              return (
+                <motion.button
+                  key={r.chunk_id}
+                  variants={item}
+                  whileTap={{ scale: 0.998 }}
+                  onClick={() => onSelect(r)}
+                  style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 12,
+                    padding: '10px 12px', borderRadius: 10, textAlign: 'left',
+                    border: `1px solid ${isSelected ? 'rgba(167,139,250,0.4)' : 'rgba(124,106,247,0.12)'}`,
+                    background: isSelected ? 'rgba(124,106,247,0.08)' : 'rgba(124,106,247,0.03)',
+                    cursor: 'pointer', width: '100%',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {/* Brain icon */}
+                  <div style={{
+                    width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                    background: 'rgba(124,106,247,0.1)', border: '1px solid rgba(124,106,247,0.2)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Brain size={13} color="#a78bfa" strokeWidth={1.4} />
+                  </div>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                      {/* Agent badge */}
+                      <span style={{
+                        fontSize: 9, padding: '2px 6px', borderRadius: 4,
+                        background: 'rgba(124,106,247,0.12)', border: '1px solid rgba(124,106,247,0.2)',
+                        color: '#a78bfa', letterSpacing: '0.06em', textTransform: 'uppercase',
+                        fontWeight: 500,
+                      }}>
+                        {agentName}
+                      </span>
+                      {r.metadata?.source && r.metadata.source !== 'agent' && (
+                        <span style={{ fontSize: 10, color: '#505068' }}>via {r.metadata.source as string}</span>
+                      )}
+                    </div>
+                    {r.text && (
+                      <p style={{
+                        fontSize: 12, color: '#c4b5fd', lineHeight: 1.5,
+                        overflow: 'hidden', display: '-webkit-box',
+                        WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+                      }}>
+                        {r.text}
+                      </p>
+                    )}
+                  </div>
+
+                  <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div style={{ width: 28, height: 3, borderRadius: 2, overflow: 'hidden', background: '#1a1a2e' }}>
+                      <div style={{
+                        height: '100%', borderRadius: 2,
+                        width: `${Math.round(r.score * 100)}%`,
+                        background: `hsl(${140 + (1 - r.score) * (-100)}, 60%, 55%)`,
+                      }} />
+                    </div>
+                    <span style={{ fontSize: 10, color: '#383850', fontFamily: 'JetBrains Mono, monospace' }}>
+                      {Math.round(r.score * 100)}
+                    </span>
+                  </div>
                 </motion.button>
               )
             })}
@@ -298,9 +376,10 @@ function MatchBadge({ score }: { score: number }) {
 
 function FileTypeIcon({ type }: { type: string }) {
   const style = { color: '#383850' }
-  if (type === 'document') return <FileText size={12} style={style} />
-  if (type === 'code')     return <Code2    size={12} style={{ color: '#f87171' }} />
-  if (type === 'audio')    return <Music    size={12} style={{ color: '#34d399' }} />
-  if (type === 'video')    return <Video    size={12} style={{ color: '#a78bfa' }} />
+  if (type === 'document')    return <FileText size={12} style={style} />
+  if (type === 'code')        return <Code2    size={12} style={{ color: '#f87171' }} />
+  if (type === 'audio')       return <Music    size={12} style={{ color: '#34d399' }} />
+  if (type === 'video')       return <Video    size={12} style={{ color: '#a78bfa' }} />
+  if (type === 'observation') return <Brain    size={12} style={{ color: '#a78bfa' }} />
   return <File size={12} style={style} />
 }

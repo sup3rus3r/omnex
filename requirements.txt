@@ -16,8 +16,9 @@ lxml>=5.2.0                   # HTML/XML parser
 
 # ── ML — Embeddings & Models ──────────────────────────────────────────────────
 torch==2.5.1                  # PyTorch — pin to cu124 build, do not auto-upgrade (2.11.0 is broken)
-torchvision>=0.18.0,<0.21.0
-transformers>=4.41.0          # CLIP, CodeBERT, general HuggingFace models
+torchvision==0.20.1           # pin to match torch 2.5.1 cu124
+torchaudio==2.5.1             # pin to match torch 2.5.1 cu124 (qwen-tts dep)
+transformers==4.57.3          # qwen-tts requires this exact version
 sentence-transformers>=3.0.0  # MiniLM text embeddings
 openai-whisper>=20231117      # Audio/video transcription
 insightface>=0.7.3            # ArcFace detection + 512-dim identity embeddings (ONNX, no TF)
