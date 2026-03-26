@@ -1,0 +1,43 @@
+version: '3.9'
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: omnex-mongo
+    restart: unless-stopped
+    volumes:
+      - ./data/mongo:/data/db
+    ports:
+      - '127.0.0.1:27017:27017'
+    environment:
+      MONGO_INITDB_DATABASE: omnex
+    healthcheck:
+      test: ['CMD', 'mongosh', '--eval', 'db.adminCommand("ping")']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: omnex-ollama
+    restart: unless-stopped
+    volumes:
+      - ./models/ollama:/root/.ollama
+    ports:
+      - '127.0.0.1:11434:11434'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:11434/']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # GPU support — remove deploy block if no NVIDIA GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  mongo_data:

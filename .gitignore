@@ -1,0 +1,52 @@
+# ── Environment ───────────────────────────────────────────────────────────────
+.env
+*.env.local
+
+# ── Python ────────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Data & Index (never commit user data) ────────────────────────────────────
+data/
+*.leann
+*.bin
+
+# ── Models (downloaded at runtime) ───────────────────────────────────────────
+models/cache/
+models/ollama/
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+interface/node_modules/
+interface/.next/
+interface/out/
+interface/.env.local
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+fuse/omnex-fuse
+fuse/*.exe
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/

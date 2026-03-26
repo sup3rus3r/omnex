@@ -1,0 +1,48 @@
+# ── Core framework ────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+
+# ── Ingestion ─────────────────────────────────────────────────────────────────
+python-magic>=0.4.27          # File type detection via libmagic (not extension)
+watchdog>=4.0.0               # File system monitoring for incremental indexing
+pypdf2>=3.0.0                 # PDF text extraction
+python-docx>=1.1.0            # DOCX extraction
+openpyxl>=3.1.0               # XLSX extraction
+python-pptx>=0.6.23           # PPTX extraction
+beautifulsoup4>=4.12.0        # HTML extraction
+lxml>=5.2.0                   # HTML/XML parser
+
+# ── ML — Embeddings & Models ──────────────────────────────────────────────────
+torch>=2.3.0                  # PyTorch inference backend
+torchvision>=0.18.0
+transformers>=4.41.0          # CLIP, CodeBERT, general HuggingFace models
+sentence-transformers>=3.0.0  # MiniLM text embeddings
+openai-whisper>=20231117      # Audio/video transcription
+deepface>=0.0.93              # RetinaFace detection + FaceNet embeddings
+
+# ── Vector Index ──────────────────────────────────────────────────────────────
+leann>=0.1.0                  # File-based vector index, 97% storage savings vs Qdrant
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+pymongo>=4.7.0                # MongoDB client
+
+# ── Media Processing ──────────────────────────────────────────────────────────
+pillow>=10.3.0                # Image processing + thumbnail generation
+opencv-python>=4.9.0          # Video frame extraction
+ffmpeg-python>=0.2.0          # Audio/video processing
+
+# ── ML Utilities ─────────────────────────────────────────────────────────────
+scikit-learn>=1.5.0           # DBSCAN face clustering
+numpy>=1.26.0
+tqdm>=4.66.0                  # Progress bars for ingestion
+huggingface-hub>=0.23.0       # Model downloads
+
+# ── API Utilities ─────────────────────────────────────────────────────────────
+httpx>=0.27.0                 # Async HTTP client (Ollama calls)
+python-multipart>=0.0.9       # File upload support
+aiofiles>=23.2.0              # Async file I/O
+
+# ── Hashing & Utilities ───────────────────────────────────────────────────────
+xxhash>=3.4.0                 # Fast content hashing for deduplication
