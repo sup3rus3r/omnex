@@ -156,25 +156,33 @@ _EXT_MIME: dict[str, str] = {
 
 
 def _get_mime(path: Path) -> str:
-    """Get MIME type using libmagic if available, else mimetypes fallback."""
+    """Get MIME type. Extension overrides take priority, then libmagic, then mimetypes."""
+    suffix = path.suffix.lower()
+
+    # Extension overrides always win — covers types libmagic misidentifies
+    if suffix in _EXT_MIME:
+        return _EXT_MIME[suffix]
+
     if _MAGIC_AVAILABLE:
         try:
             return magic.from_file(str(path), mime=True)
         except Exception:
             pass
-    # Fallback: extension-based
-    suffix = path.suffix.lower()
-    if suffix in _EXT_MIME:
-        return _EXT_MIME[suffix]
+
     mime, _ = mimetypes.guess_type(str(path))
     return mime or "application/octet-stream"
 
 
 def is_indexable(path: Path) -> bool:
     """Returns True if the file is a type Omnex can index."""
+    import sys
     if not path.is_file():
+        print(f"[detector] {path}: not a file", flush=True, file=sys.stderr)
         return False
     if path.stat().st_size == 0:
+        print(f"[detector] {path}: zero size", flush=True, file=sys.stderr)
         return False
-    file_type, _ = detect(path)
-    return file_type != FileType.UNKNOWN
+    file_type, mime = detect(path)
+    result = file_type != FileType.UNKNOWN
+    print(f"[detector] {path}: mime={mime!r} type={file_type} indexable={result}", flush=True, file=sys.stderr)
+    return result

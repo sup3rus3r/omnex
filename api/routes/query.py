@@ -1,7 +1,9 @@
 """
 Omnex — Query Routes
-POST /query         — Natural language search
-POST /query/refine  — Narrow previous results (session-aware)
+POST /query         — Natural language search (session-aware)
+POST /query/refine  — Narrow previous results
+POST /sessions      — Create a new session
+GET  /sessions/{id} — Fetch session history
 """
 
 from __future__ import annotations
@@ -9,9 +11,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from api.auth import require_api_key
 from api.query_engine import search, QueryResponse
 
 router = APIRouter()
@@ -58,16 +61,31 @@ class QueryResponseOut(BaseModel):
     session_id:             str | None
 
 
+class SessionOut(BaseModel):
+    session_id: str
+    messages:   list[dict]
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("", response_model=QueryResponseOut)
+@router.post("", response_model=QueryResponseOut, dependencies=[Depends(require_api_key)])
 async def query(req: QueryRequest):
     """
     Natural language search across all indexed data.
-
-    Automatically detects query intent (visual, temporal, code, location)
-    and routes to the appropriate LEANN indexes.
+    If session_id provided, passes conversation history to the LLM for context.
     """
+    from storage.mongo import (
+        get_session_messages, upsert_session_turn, create_session
+    )
+
+    # Resolve or create session
+    session_id = req.session_id
+    if not session_id:
+        session_id = create_session()
+
+    # Fetch prior conversation history
+    history = get_session_messages(session_id, last_n=10)
+
     try:
         response = await search(
             query=req.query,
@@ -75,22 +93,34 @@ async def query(req: QueryRequest):
             file_type_filter=req.file_type,
             date_from=req.date_from,
             date_to=req.date_to,
-            session_id=req.session_id,
+            session_id=session_id,
+            history=history,
         )
-        return _to_response_out(response)
+
+        # Persist this turn
+        upsert_session_turn(session_id, "user", req.query)
+        if response.llm_response:
+            upsert_session_turn(session_id, "assistant", response.llm_response)
+
+        out = _to_response_out(response)
+        out.session_id = session_id
+        return out
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/refine", response_model=QueryResponseOut)
+@router.post("/refine", response_model=QueryResponseOut, dependencies=[Depends(require_api_key)])
 async def refine(req: RefineRequest):
     """
     Refine a previous query — narrows results within a session context.
     Supports 'more like this' via anchor_chunk_id.
     """
+    from storage.mongo import get_session_messages, upsert_session_turn
+
+    history = get_session_messages(req.session_id, last_n=10)
+
     try:
         if req.anchor_chunk_id:
-            # Similarity search from a specific result
             refined_query = await _build_similarity_query(req.anchor_chunk_id, req.query)
         else:
             refined_query = req.query
@@ -100,10 +130,35 @@ async def refine(req: RefineRequest):
             top_k=req.top_k,
             file_type_filter=req.file_type,
             session_id=req.session_id,
+            history=history,
         )
+
+        upsert_session_turn(req.session_id, "user", req.query)
+        if response.llm_response:
+            upsert_session_turn(req.session_id, "assistant", response.llm_response)
+
         return _to_response_out(response)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions", response_model=SessionOut)
+async def new_session():
+    """Create a new conversation session. Returns the session_id."""
+    from storage.mongo import create_session
+    sid = create_session()
+    return {"session_id": sid, "messages": []}
+
+
+@router.get("/sessions/{session_id}", response_model=SessionOut)
+async def get_session_history(session_id: str):
+    """Fetch the full message history for a session."""
+    from storage.mongo import get_session
+    doc = get_session(session_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    msgs = [{"role": m["role"], "content": m["content"]} for m in doc.get("messages", [])]
+    return {"session_id": session_id, "messages": msgs}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

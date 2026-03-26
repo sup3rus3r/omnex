@@ -339,7 +339,8 @@ def ingest_file(path: Path) -> dict:
 
 def run(source_path: Path, workers: int = 4, cancel_event=None) -> None:
     import sys
-    print(f"[run] source_path={source_path} exists={source_path.exists()}", flush=True, file=sys.stderr)
+    size = source_path.stat().st_size if source_path.exists() else -1
+    print(f"[run] source_path={source_path} exists={source_path.exists()} size={size}", flush=True, file=sys.stderr)
     logger.info(f"Omnex ingestion starting — source: {source_path}")
 
     files = collect_files(source_path)

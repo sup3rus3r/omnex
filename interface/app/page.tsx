@@ -1,9 +1,8 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { useCompletion } from '@ai-sdk/react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Brain, Database, Users, Clock, Settings, Mic, MicOff, ArrowUp, Loader2, X, ChevronRight, Zap, HardDrive, FileText, Image, Video, Music, Code2, File, Sparkles, Activity, Search, FolderOpen } from 'lucide-react'
+import { Brain, Database, Users, Clock, Settings, Mic, MicOff, ArrowUp, Loader2, X, ChevronRight, Zap, HardDrive, FileText, Image, Video, Music, Code2, File, Sparkles, Activity, Search, FolderOpen, Volume2 } from 'lucide-react'
 import ResultGrid from '@/components/ResultGrid/ResultGrid'
 import PreviewPane from '@/components/PreviewPane/PreviewPane'
 import IngestionPanel from '@/components/IngestionPanel/IngestionPanel'
@@ -29,7 +28,7 @@ export interface QueryResponse {
   session_id:            string | null
 }
 
-type NavView = 'recall' | 'ingest' | 'people' | 'timeline'
+type NavView = 'recall' | 'ingest' | 'people' | 'timeline' | 'remote'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -58,45 +57,102 @@ const MODEL_DISPLAY: Record<string, string> = {
 }
 
 export default function Home() {
-  const [setupDone,     setSetupDone]     = useState<boolean>(true) // assume ready; set false only if API says otherwise
+  const [setupDone,     setSetupDone]     = useState<boolean>(true)
   const [modelStatuses, setModelStatuses] = useState<{id: string, name: string, status: string}[]>([])
   const [view,          setView]          = useState<NavView>('recall')
   const [selectedChunk, setSelectedChunk] = useState<QueryResult | null>(null)
   const [showIdentity,  setShowIdentity]  = useState(false)
   const [loading,       setLoading]       = useState(false)
+  const [llmLoading,    setLlmLoading]    = useState(false)
   const [messages,      setMessages]      = useState<ChatMessage[]>([])
   const [input,         setInput]         = useState('')
   const [listening,     setListening]     = useState(false)
   const [voiceSupport,  setVoiceSupport]  = useState(false)
+  const [ttsSupport,    setTtsSupport]    = useState(false)
+  const [ttsEnabled,    setTtsEnabled]    = useState(false)
   const [stats,         setStats]         = useState<IndexStats | null>(null)
-  const [apiReady,      setApiReady]      = useState<boolean | null>(null) // null=loading, true=ok, false=down
+  const [apiReady,      setApiReady]      = useState<boolean | null>(null)
   const [focused,       setFocused]       = useState(false)
-  const inputRef   = useRef<HTMLTextAreaElement>(null)
-  const recognRef  = useRef<any>(null)
+  const [sessionId,     setSessionId]     = useState<string | null>(null)
+  const [streamingText, setStreamingText] = useState('')
+  const inputRef       = useRef<HTMLTextAreaElement>(null)
+  const recognRef      = useRef<any>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const ttsRef         = useRef<SpeechSynthesisUtterance | null>(null)
 
   const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
+  const [apiKey, setApiKey] = useState<string | null>(null)
 
-  const { completion, complete, isLoading: llmLoading } = useCompletion({ api: '/api/chat' })
+  function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) }
+    if (apiKey) headers['X-API-Key'] = apiKey
+    return fetch(url, { ...init, headers })
+  }
+
+  // Init: restore or create session, detect browser capabilities
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    // Fetch API key first, then init session with it
+    fetch(`${API}/setup/tunnel`)
+      .then(r => r.json())
+      .then(d => {
+        const key = d.api_key || null
+        if (key) setApiKey(key)
+
+        const stored = localStorage.getItem('omnex_session_id')
+        if (stored) {
+          setSessionId(stored)
+        } else {
+          const headers: Record<string, string> = {}
+          if (key) headers['X-API-Key'] = key
+          fetch(`${API}/query/sessions`, { method: 'POST', headers })
+            .then(r => r.json())
+            .then(d => {
+              if (d.session_id) {
+                setSessionId(d.session_id)
+                localStorage.setItem('omnex_session_id', d.session_id)
+              }
+            })
+            .catch(() => {})
+        }
+      })
+      .catch(() => {
+        // No tunnel/auth — still init session
+        const stored = localStorage.getItem('omnex_session_id')
+        if (!stored) {
+          fetch(`${API}/query/sessions`, { method: 'POST' })
+            .then(r => r.json())
+            .then(d => { if (d.session_id) { setSessionId(d.session_id); localStorage.setItem('omnex_session_id', d.session_id) } })
+            .catch(() => {})
+        } else {
+          setSessionId(stored)
+        }
+      })
+
+    const hasSpeechRec = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
+    setVoiceSupport(hasSpeechRec)
+
+    const hasTts = 'speechSynthesis' in window
+    setTtsSupport(hasTts)
+    // Default TTS on if available
+    if (hasTts) setTtsEnabled(true)
+  }, [])
 
   // Fetch stats on mount + poll every 10s to keep connection indicator live
   useEffect(() => {
     fetchStats()
     const interval = setInterval(fetchStats, 10000)
-    const supported =
-      typeof window !== 'undefined' &&
-      ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
-    setVoiceSupport(supported)
     return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, completion])
+  }, [messages, streamingText])
 
   async function fetchStats() {
     try {
-      const res = await fetch(`${API}/stats`, { signal: AbortSignal.timeout(3000) })
+      const res = await apiFetch(`${API}/stats`, { signal: AbortSignal.timeout(3000) })
       if (!res.ok) { setApiReady(false); return }
       const data = await res.json()
       setApiReady(true)
@@ -108,8 +164,7 @@ export default function Home() {
         audio:     data.by_type?.audio     || 0,
         code:      data.by_type?.code      || 0,
       })
-      // Piggyback model status on the same working connection
-      fetch(`${API}/setup/status`)
+      apiFetch(`${API}/setup/status`)
         .then(r => r.json())
         .then(d => {
           if (Array.isArray(d.models) && d.models.length > 0) setModelStatuses(d.models)
@@ -119,39 +174,111 @@ export default function Home() {
     } catch { setApiReady(false) }
   }
 
+  const speakText = useCallback((text: string) => {
+    if (!ttsEnabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    window.speechSynthesis.cancel()
+    const utt = new SpeechSynthesisUtterance(text)
+    utt.rate  = 1.0
+    utt.pitch = 1.0
+    ttsRef.current = utt
+    window.speechSynthesis.speak(utt)
+  }, [ttsEnabled])
+
   async function handleQuery(query: string) {
     if (!query.trim() || loading) return
     setLoading(true)
     setSelectedChunk(null)
+    setStreamingText('')
 
     const userMsg: ChatMessage = { role: 'user', content: query, timestamp: new Date() }
     setMessages((m) => [...m, userMsg])
     setInput('')
     if (inputRef.current) inputRef.current.style.height = 'auto'
 
+    // Build conversation history for LLM (last 10 turns, text-only)
+    const history = messages
+      .filter(m => m.content)
+      .slice(-10)
+      .map(m => ({ role: m.role, content: m.content }))
+
     try {
-      const res  = await fetch(`${API}/query`, {
+      const res  = await apiFetch(`${API}/query`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ query, top_k: 20 }),
+        body:    JSON.stringify({ query, top_k: 20, session_id: sessionId }),
       })
       const data: QueryResponse = await res.json()
 
-      const assistantMsg: ChatMessage = {
+      // Update session_id if server returned one (auto-created)
+      if (data.session_id && data.session_id !== sessionId) {
+        setSessionId(data.session_id)
+        localStorage.setItem('omnex_session_id', data.session_id)
+      }
+
+      setLoading(false)
+
+      // Add assistant message placeholder with results
+      setMessages((m) => [...m, {
         role:        'assistant',
         content:     '',
         results:     data.results,
         total:       data.total,
         refinements: data.suggested_refinements,
         timestamp:   new Date(),
-      }
-      setMessages((m) => [...m, assistantMsg])
+      }])
 
-      if (data.results?.length) {
-        const context = data.results.slice(0, 5).map((r, i) =>
-          `[${i + 1}] ${r.file_type.toUpperCase()} — ${r.source_path}\n${(r.text || '').slice(0, 400)}`
-        ).join('\n\n')
-        complete('', { body: { query, context } })
+      // Stream LLM response via /api/chat — always, even with no results
+      {
+        const context = data.results?.length
+          ? data.results.slice(0, 5).map((r, i) =>
+              `[${i + 1}] ${r.file_type.toUpperCase()} — ${r.source_path}\n${(r.text || '').slice(0, 400)}`
+            ).join('\n\n')
+          : ''
+
+        setLlmLoading(true)
+        let fullText = ''
+
+        const chatRes = await fetch('/api/chat', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ query, context, messages: history }),
+        })
+
+        const reader = chatRes.body?.getReader()
+        const decoder = new TextDecoder()
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            const raw = decoder.decode(value, { stream: true })
+            for (const line of raw.split('\n')) {
+              const trimmed = line.trim()
+              if (!trimmed || trimmed === 'data: [DONE]') continue
+              // SSE format: "data: text"
+              if (trimmed.startsWith('data: ')) {
+                fullText += trimmed.slice(6)
+              } else {
+                // Plain text stream — append directly
+                fullText += line
+              }
+            }
+            setStreamingText(fullText)
+          }
+        }
+
+        // Finalize: write streamed text into last assistant message
+        setMessages((m) => {
+          const updated = [...m]
+          const lastIdx = updated.map((msg, i) => msg.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
+          if (lastIdx !== undefined) updated[lastIdx] = { ...updated[lastIdx], content: fullText }
+          return updated
+        })
+        setStreamingText('')
+        setLlmLoading(false)
+
+        // Voice output
+        if (fullText) speakText(fullText)
       }
     } catch (err) {
       console.error('Query failed:', err)
@@ -201,7 +328,7 @@ export default function Home() {
   if (setupDone === false) {
     return <SetupScreen onComplete={() => {
       setSetupDone(true)
-      fetch(`${API}/setup/status`).then(r => r.json()).then(d => { if (d.models) setModelStatuses(d.models) }).catch(() => {})
+      apiFetch(`${API}/setup/status`).then(r => r.json()).then(d => { if (d.models) setModelStatuses(d.models) }).catch(() => {})
     }} />
   }
 
@@ -243,7 +370,7 @@ export default function Home() {
           <NavItem icon={<Database size={14} />} label="Ingest" active={view === 'ingest'} onClick={() => setView('ingest')} />
           <NavItem icon={<Users size={14} />} label="People" active={view === 'people'} onClick={() => { setView('people'); setShowIdentity(true) }} />
           <NavItem icon={<Clock size={14} />} label="Timeline" active={view === 'timeline'} onClick={() => setView('timeline')} badge="soon" />
-          <NavItem icon={<Zap size={14} />} label="Remote Access" active={false} onClick={() => {}} badge="soon" />
+          <NavItem icon={<Zap size={14} />} label="Remote Access" active={view === 'remote'} onClick={() => setView('remote' as NavView)} />
 
           <div style={{ margin: '8px 0', borderTop: '1px solid #1a1a2e' }} />
 
@@ -587,7 +714,7 @@ export default function Home() {
                                 /* Assistant message */
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                                   {/* LLM text response */}
-                                  {(idx === lastAssistantIdx && (completion || llmLoading)) ? (
+                                  {(idx === lastAssistantIdx && (streamingText || llmLoading)) ? (
                                     <div style={{
                                       background: 'rgba(10,10,15,0.8)',
                                       border: '1px solid #1a1a2e',
@@ -617,8 +744,8 @@ export default function Home() {
                                         )}
                                       </div>
                                       <p style={{ fontSize: 14, lineHeight: 1.7, color: '#e8e8f0' }}>
-                                        {completion}
-                                        {llmLoading && <span className="cursor-blink" style={{ display: 'inline-block', width: 2, height: 14, background: '#7c6af7', marginLeft: 2, verticalAlign: 'middle' }} />}
+                                        {streamingText}
+                                        {llmLoading && <span style={{ display: 'inline-block', width: 2, height: 14, background: '#7c6af7', marginLeft: 2, verticalAlign: 'middle', animation: 'blink 1s step-end infinite' }} />}
                                       </p>
                                     </div>
                                   ) : msg.content ? (
@@ -718,6 +845,12 @@ export default function Home() {
                         voiceSupport={voiceSupport}
                         onVoice={toggleVoice}
                         inputRef={inputRef}
+                        ttsSupport={ttsSupport}
+                        ttsEnabled={ttsEnabled}
+                        onTtsToggle={() => {
+                          setTtsEnabled(v => !v)
+                          if (ttsEnabled) window.speechSynthesis?.cancel()
+                        }}
                       />
                     </div>
                   </div>
@@ -754,10 +887,22 @@ export default function Home() {
             >
               <div style={{ textAlign: 'center' }}>
                 <Clock size={40} color="#252540" strokeWidth={1} style={{ marginBottom: 16 }} />
-                <p style={{ fontSize: 14, color: '#383850', marginBottom: 6 }}>Timeline view coming in Phase 9</p>
+                <p style={{ fontSize: 14, color: '#383850', marginBottom: 6 }}>Timeline view coming soon</p>
                 <p style={{ fontSize: 12, color: '#252540' }}>Your memories, organized by time and place.</p>
               </div>
             </motion.div>
+
+          ) : view === 'remote' ? (
+            /* ── REMOTE ACCESS ───────────────────────────────────── */
+            <motion.div
+              key="remote"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              style={{ flex: 1, overflow: 'auto', padding: '32px 32px', position: 'relative', zIndex: 1 }}
+            >
+              <RemoteAccessPanel api={API} />
+            </motion.div>
+
           ) : null}
         </AnimatePresence>
       </div>
@@ -771,6 +916,148 @@ export default function Home() {
     </div>
   )
 }
+
+/* ── Remote Access Panel ───────────────────────────────────────────────────── */
+function RemoteAccessPanel({ api }: { api: string }) {
+  const [tunnel, setTunnel]     = useState<any>(null)
+  const [copied, setCopied]     = useState<string | null>(null)
+  const [, setPolling]          = useState(true)
+
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>
+    async function poll() {
+      try {
+        const res  = await fetch(`${api}/setup/tunnel`)
+        const data = await res.json()
+        setTunnel(data)
+        if (data.status === 'active' || data.status === 'error' || data.status === 'disabled') {
+          setPolling(false)
+          clearInterval(interval)
+        }
+      } catch {}
+    }
+    poll()
+    interval = setInterval(poll, 2000)
+    return () => clearInterval(interval)
+  }, [])
+
+  function copy(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key)
+      setTimeout(() => setCopied(null), 1800)
+    })
+  }
+
+  const url     = tunnel?.url
+  const enabled = tunnel?.auth_enabled
+  const apiKey  = tunnel?.api_key || 'YOUR_KEY'
+  const curlCmd = url
+    ? `curl -H "X-API-Key: ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"query":"show me recent photos"}' \\\n  ${url}/query`
+    : ''
+
+  const mcpConfig = url ? JSON.stringify({
+    mcpServers: {
+      omnex: {
+        url:     `${url}/mcp`,
+        headers: { "X-API-Key": apiKey },
+      }
+    }
+  }, null, 2) : ''
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <div style={{ marginBottom: 28 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>Remote Access</h2>
+        <p style={{ fontSize: 13, color: '#505068' }}>
+          Expose Omnex to the internet via an ngrok tunnel. Set <code style={{ color: '#a78bfa', fontSize: 12 }}>NGROK_AUTHTOKEN</code> in your docker-compose env to activate.
+        </p>
+      </div>
+
+      {/* Tunnel status card */}
+      <div style={{ background: 'rgba(10,10,15,0.8)', border: '1px solid #1a1a2e', borderRadius: 12, padding: '20px 24px', marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <div style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: tunnel?.status === 'active' ? '#34d399' : tunnel?.status === 'starting' ? '#fbbf24' : tunnel?.status === 'error' ? '#f87171' : '#383850',
+            boxShadow: tunnel?.status === 'active' ? '0 0 8px #34d399' : 'none',
+          }} />
+          <span style={{ fontSize: 13, fontWeight: 500, color: '#e8e8f0' }}>
+            {tunnel?.status === 'active'   ? 'Tunnel active'
+           : tunnel?.status === 'starting' ? 'Opening tunnel…'
+           : tunnel?.status === 'error'    ? 'Tunnel error'
+           : tunnel?.status === 'disabled' ? 'Tunnel disabled'
+           : 'Checking…'}
+          </span>
+        </div>
+
+        {url && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <code style={{ flex: 1, fontSize: 13, color: '#a78bfa', background: 'rgba(124,106,247,0.08)', padding: '8px 12px', borderRadius: 8, wordBreak: 'break-all' }}>
+              {url}
+            </code>
+            <button onClick={() => copy(url, 'url')} style={{ padding: '8px 14px', borderRadius: 8, background: 'rgba(124,106,247,0.12)', border: '1px solid rgba(124,106,247,0.2)', color: '#a78bfa', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {copied === 'url' ? 'Copied!' : 'Copy URL'}
+            </button>
+          </div>
+        )}
+
+        {tunnel?.status === 'disabled' && (
+          <div style={{ fontSize: 12, color: '#505068', lineHeight: 1.7 }}>
+            Add to your <code style={{ color: '#a78bfa' }}>docker-compose.yml</code> environment:<br />
+            <code style={{ display: 'block', marginTop: 8, padding: '10px 12px', background: 'rgba(124,106,247,0.06)', borderRadius: 8, color: '#e8e8f0', fontSize: 11 }}>
+              NGROK_AUTHTOKEN: your_token_here<br />
+              OMNEX_API_KEY: your_secret_key
+            </code>
+          </div>
+        )}
+
+        {tunnel?.error && (
+          <p style={{ fontSize: 12, color: '#f87171', marginTop: 8 }}>{tunnel.error}</p>
+        )}
+      </div>
+
+      {/* Auth status */}
+      <div style={{ background: 'rgba(10,10,15,0.8)', border: '1px solid #1a1a2e', borderRadius: 12, padding: '16px 24px', marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: enabled ? '#34d399' : '#fbbf24' }} />
+          <span style={{ fontSize: 13, color: '#e8e8f0', fontWeight: 500 }}>
+            API Key Auth — {enabled ? 'enabled' : 'disabled (local mode)'}
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: '#505068', marginTop: 4 }}>
+          {enabled ? 'All external requests require X-API-Key header.' : 'Set OMNEX_API_KEY env var to require authentication.'}
+        </p>
+      </div>
+
+      {/* Connect instructions */}
+      {url && (
+        <>
+          <div style={{ background: 'rgba(10,10,15,0.8)', border: '1px solid #1a1a2e', borderRadius: 12, padding: '16px 24px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <span style={{ fontSize: 12, color: '#505068', textTransform: 'uppercase', letterSpacing: '0.1em' }}>REST API</span>
+              <button onClick={() => copy(curlCmd, 'curl')} style={{ padding: '4px 10px', borderRadius: 6, background: 'transparent', border: '1px solid #1a1a2e', color: '#505068', fontSize: 11, cursor: 'pointer' }}>
+                {copied === 'curl' ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <pre style={{ fontSize: 11, color: '#a78bfa', margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{curlCmd}</pre>
+          </div>
+
+          <div style={{ background: 'rgba(10,10,15,0.8)', border: '1px solid #1a1a2e', borderRadius: 12, padding: '16px 24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <span style={{ fontSize: 12, color: '#505068', textTransform: 'uppercase', letterSpacing: '0.1em' }}>MCP (Claude / Cursor / Windsurf)</span>
+              <button onClick={() => copy(mcpConfig, 'mcp')} style={{ padding: '4px 10px', borderRadius: 6, background: 'transparent', border: '1px solid #1a1a2e', color: '#505068', fontSize: 11, cursor: 'pointer' }}>
+                {copied === 'mcp' ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+            <pre style={{ fontSize: 11, color: '#34d399', margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{mcpConfig}</pre>
+            <p style={{ fontSize: 11, color: '#383850', marginTop: 10 }}>Paste into your Claude Desktop / Cursor mcp.json config.</p>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 
 /* ── Nav item ──────────────────────────────────────────────────────────────── */
 function NavItem({ icon, label, active, onClick, badge }: {
@@ -821,6 +1108,7 @@ function NavItem({ icon, label, active, onClick, badge }: {
 function InputBar({
   value, onChange, onSubmit, onKey, onFocus, onBlur,
   focused, loading, listening, voiceSupport, onVoice, inputRef,
+  ttsSupport, ttsEnabled, onTtsToggle,
 }: {
   value: string
   onChange: (v: string) => void
@@ -834,6 +1122,9 @@ function InputBar({
   voiceSupport: boolean
   onVoice: () => void
   inputRef: React.RefObject<HTMLTextAreaElement>
+  ttsSupport?: boolean
+  ttsEnabled?: boolean
+  onTtsToggle?: () => void
 }) {
   const hasValue = value.trim().length > 0
   const borderColor = listening
@@ -903,6 +1194,28 @@ function InputBar({
               onMouseLeave={(e) => { if (!listening) (e.currentTarget as HTMLButtonElement).style.color = '#383850' }}
             >
               {listening ? <MicOff size={15} /> : <Mic size={15} />}
+            </motion.button>
+          )}
+
+          {ttsSupport && (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.92 }}
+              onClick={onTtsToggle}
+              title={ttsEnabled ? 'Voice output on' : 'Voice output off'}
+              style={{
+                width: 34, height: 34, borderRadius: 12, flexShrink: 0,
+                background: ttsEnabled ? 'rgba(52,211,153,0.08)' : 'transparent',
+                border: ttsEnabled ? '1px solid rgba(52,211,153,0.2)' : '1px solid transparent',
+                cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: ttsEnabled ? '#34d399' : '#383850',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={(e) => { if (!ttsEnabled) (e.currentTarget as HTMLButtonElement).style.color = '#34d399' }}
+              onMouseLeave={(e) => { if (!ttsEnabled) (e.currentTarget as HTMLButtonElement).style.color = '#383850' }}
+            >
+              <Volume2 size={15} />
             </motion.button>
           )}
 

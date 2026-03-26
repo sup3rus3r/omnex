@@ -2,44 +2,59 @@
  * Omnex — Streaming LLM route
  * POST /api/chat
  *
- * Receives { query, context } from the UI after the vector search completes.
+ * Receives { query, context, messages } from the UI.
+ * `messages` is the full prior conversation history (role/content pairs).
  * Streams the LLM response back using Vercel AI SDK.
  *
- * Provider is selected via NEXT_PUBLIC_LLM_PROVIDER env var:
+ * Provider is selected via LLM_PROVIDER env var:
  *   anthropic — claude-sonnet-4-6 (default)
  *   openai    — gpt-4o-mini
  *   local     — Ollama via openai-compatible endpoint
  */
 
 import { streamText } from 'ai'
+import type { ModelMessage } from 'ai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 
-export async function POST(req: Request) {
-  const { query, context } = await req.json()
+const SYSTEM_PROMPT =
+  'You are Omnex, an AI memory assistant. ' +
+  'You help users recall and understand their personal data — documents, photos, code, audio, and video. ' +
+  'When relevant search results are provided, reference them by number. ' +
+  'Be concise and specific. Use conversation history to answer follow-up questions in context.'
 
-  const provider  = process.env.LLM_PROVIDER || 'anthropic'
-  const prompt    = buildPrompt(query, context)
+export async function POST(req: Request) {
+  const { query, context, messages: history = [] } = await req.json()
+
+  const provider = process.env.LLM_PROVIDER || 'anthropic'
+
+  // Build messages array: prior history + current user turn with context
+  const userContent = context
+    ? `User query: "${query}"\n\nRelevant items from personal data:\n\n${context}\n\nProvide a concise, helpful response. Reference items by number where relevant.`
+    : query
+
+  const messages: ModelMessage[] = [
+    ...(history as ModelMessage[]),
+    { role: 'user', content: userContent },
+  ]
 
   if (provider === 'anthropic') {
-    const anthropic = createAnthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    })
+    const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
     const result = streamText({
-      model:  anthropic(process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'),
-      prompt,
+      model:           anthropic(process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'),
+      system:          SYSTEM_PROMPT,
+      messages,
       maxOutputTokens: 1024,
     })
     return result.toTextStreamResponse()
   }
 
   if (provider === 'openai') {
-    const openai = createOpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    })
+    const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
     const result = streamText({
-      model:  openai(process.env.OPENAI_MODEL || 'gpt-4o-mini'),
-      prompt,
+      model:           openai(process.env.OPENAI_MODEL || 'gpt-4o-mini'),
+      system:          SYSTEM_PROMPT,
+      messages,
       maxOutputTokens: 1024,
     })
     return result.toTextStreamResponse()
@@ -53,19 +68,10 @@ export async function POST(req: Request) {
     apiKey: 'ollama',
   })
   const result = streamText({
-    model:  openai(process.env.LOCAL_LLM_MODEL || 'phi3:mini'),
-    prompt,
+    model:           openai(process.env.LOCAL_LLM_MODEL || 'phi3:mini'),
+    system:          SYSTEM_PROMPT,
+    messages,
     maxOutputTokens: 1024,
   })
   return result.toTextStreamResponse()
-}
-
-function buildPrompt(query: string, context: string): string {
-  return `You are Omnex, an AI memory assistant. The user asked: "${query}"
-
-Here are the most relevant items from their personal data:
-
-${context}
-
-Provide a concise, helpful response. Reference specific items by number. If you suggest the user look at something specific, say so clearly.`
 }

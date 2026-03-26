@@ -86,3 +86,19 @@ async def start_download():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/tunnel")
+async def tunnel_status():
+    """Return ngrok tunnel URL and auth status."""
+    from api.tunnel import get_status
+    return get_status()
+
+
+@router.get("/config")
+async def public_config():
+    """Return public configuration the UI needs to know about."""
+    from api.auth import api_key_enabled
+    return {
+        "auth_enabled": api_key_enabled(),
+    }

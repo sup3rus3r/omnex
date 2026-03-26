@@ -35,6 +35,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # InsightFace + ONNX runtime (CPU — no CUDA in container)
 RUN pip install --no-cache-dir insightface>=0.7.3 onnxruntime>=1.19.0
 
+# usearch — compressed file-based vector index (i8 quantization, replaces leann)
+RUN pip install --no-cache-dir usearch>=2.9.0
+
 # Copy application code
 COPY api/        ./api/
 COPY ingestion/  ./ingestion/
@@ -47,8 +50,6 @@ RUN mkdir -p /data/leann /data/binary /data/models
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-ENV TRANSFORMERS_OFFLINE=1
-ENV HF_DATASETS_OFFLINE=1
 ENV HF_HOME=/data/models/huggingface
 ENV WHISPER_CACHE=/data/models/whisper
 

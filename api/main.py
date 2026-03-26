@@ -12,16 +12,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import query, chunks, ingest, identity, setup
+from api.routes import query, chunks, ingest, identity, setup, mcp
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup — warm up DB connection
     from storage.mongo import get_db
-    get_db()  # Establishes connection + creates indexes
+    from api.tunnel import start_tunnel
+    get_db()
+    start_tunnel(port=8000)
     yield
-    # Shutdown — nothing to clean up (LEANN saves on each write)
 
 
 app = FastAPI(
@@ -48,6 +48,7 @@ app.include_router(chunks.router,   prefix="/chunk",    tags=["Chunks"])
 app.include_router(ingest.router,   prefix="/ingest",   tags=["Ingestion"])
 app.include_router(identity.router, prefix="/identity", tags=["Identity"])
 app.include_router(setup.router,    prefix="/setup",    tags=["Setup"])
+app.include_router(mcp.router,      prefix="/mcp",      tags=["MCP"])
 
 
 @app.get("/", tags=["Health"])

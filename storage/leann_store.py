@@ -1,30 +1,27 @@
 """
-Omnex — LEANN Vector Index
-File-based vector index using LEANN — 97% storage savings vs Qdrant.
-No server process required. Indexes are .leann files on the destination drive.
+Omnex — Vector Index (USearch)
+File-based compressed vector index using USearch — i8 quantization gives ~4x
+storage compression vs float32. No server process required.
 
 Indexes:
-    text_chunks.leann   — 384-dim MiniLM, cosine
-    image_chunks.leann  — 512-dim CLIP, cosine  (Phase 2)
-    video_frames.leann  — 512-dim CLIP, cosine  (Phase 5)
-    audio_chunks.leann  — 384-dim MiniLM, cosine (Phase 5)
-    code_chunks.leann   — 768-dim CodeBERT, cosine (Phase 6)
+    text_chunks.usearch   — 384-dim MiniLM, cosine, i8
+    image_chunks.usearch  — 512-dim CLIP, cosine, i8
+    video_frames.usearch  — 512-dim CLIP, cosine, i8
+    audio_chunks.usearch  — 384-dim MiniLM, cosine, i8
+    code_chunks.usearch   — 768-dim CodeBERT, cosine, i8
 """
 
 from __future__ import annotations
 
+import json
 import os
+import threading
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-try:
-    import leann
-    _LEANN_AVAILABLE = True
-except ImportError:
-    _LEANN_AVAILABLE = False
+from usearch.index import Index
 
 
 class IndexName(str, Enum):
@@ -43,7 +40,10 @@ INDEX_DIMS = {
     IndexName.CODE:  768,
 }
 
-_indexes: dict[str, Any] = {}
+_indexes:  dict[str, Index] = {}
+_payloads: dict[str, dict[int, dict]] = {}   # key → payload
+_counters: dict[str, int] = {}               # next key
+_locks:    dict[str, threading.Lock] = {}
 
 
 def _index_dir() -> Path:
@@ -53,28 +53,51 @@ def _index_dir() -> Path:
     return d
 
 
-def _get_index(name: IndexName):
-    """Load or create a LEANN index."""
-    if not _LEANN_AVAILABLE:
-        raise RuntimeError(
-            "LEANN is not installed. Run: pip install leann"
-        )
+def _index_file(name: IndexName) -> Path:
+    return _index_dir() / f"{name.value}.usearch"
 
+
+def _payload_file(name: IndexName) -> Path:
+    return _index_dir() / f"{name.value}.payload.json"
+
+
+def _get_lock(name: IndexName) -> threading.Lock:
+    key = name.value
+    if key not in _locks:
+        _locks[key] = threading.Lock()
+    return _locks[key]
+
+
+def _get_index(name: IndexName) -> tuple[Index, dict[int, dict], int]:
     key = name.value
     if key not in _indexes:
-        index_path = str(_index_dir() / f"{key}.leann")
-        dim = INDEX_DIMS[name]
+        with _get_lock(name):
+            if key not in _indexes:
+                dim = INDEX_DIMS[name]
+                idx = Index(ndim=dim, metric="cos", dtype="i8")
+                ip  = _index_file(name)
+                pp  = _payload_file(name)
 
-        if Path(index_path).exists():
-            _indexes[key] = leann.load(index_path)
-        else:
-            _indexes[key] = leann.Index(
-                dim=dim,
-                metric="cosine",
-                path=index_path,
-            )
+                if ip.exists():
+                    idx.load(str(ip))
+                    payload = json.loads(pp.read_text()) if pp.exists() else {}
+                    payload = {int(k): v for k, v in payload.items()}
+                    counter = max(payload.keys(), default=-1) + 1
+                else:
+                    payload = {}
+                    counter = 0
 
-    return _indexes[key]
+                _indexes[key]  = idx
+                _payloads[key] = payload
+                _counters[key] = counter
+
+    return _indexes[key], _payloads[key], _counters[key]
+
+
+def _save(name: IndexName) -> None:
+    key = name.value
+    _indexes[key].save(str(_index_file(name)))
+    _payload_file(name).write_text(json.dumps(_payloads[key]))
 
 
 def add_vector(
@@ -83,17 +106,18 @@ def add_vector(
     vector: list[float] | np.ndarray,
     metadata: dict | None = None,
 ) -> str:
-    """
-    Add a vector to the index.
+    with _get_lock(index_name):
+        idx, payload, counter = _get_index(index_name)
+        key = index_name.value
 
-    Returns:
-        LEANN internal node ID (stored on the chunk document as leann_id)
-    """
-    idx = _get_index(index_name)
-    vec = np.array(vector, dtype=np.float32)
-    node_id = idx.add(vec, payload={"chunk_id": chunk_id, **(metadata or {})})
-    idx.save()
-    return str(node_id)
+        vec = np.array(vector, dtype=np.float32)
+        idx.add(counter, vec)
+        payload[counter] = {"chunk_id": chunk_id, **(metadata or {})}
+        _payloads[key] = payload
+        _counters[key] = counter + 1
+
+        _save(index_name)
+        return str(counter)
 
 
 def search(
@@ -102,44 +126,47 @@ def search(
     top_k: int = 20,
     filters: dict | None = None,
 ) -> list[dict]:
-    """
-    Search the index for nearest neighbours.
+    idx, payload, _ = _get_index(index_name)
 
-    Returns:
-        List of dicts: [{chunk_id, score, payload}, ...]
-        Sorted by score descending (most similar first).
-    """
-    idx = _get_index(index_name)
+    if len(idx) == 0:
+        return []
+
+    k = min(top_k, len(idx))
     vec = np.array(query_vector, dtype=np.float32)
+    matches = idx.search(vec, k)
 
-    results = idx.search(vec, k=top_k, filter=filters)
+    results = []
+    for key, distance in zip(matches.keys, matches.distances):
+        p = payload.get(int(key), {})
+        # usearch cosine distance = 1 - cosine_similarity
+        score = float(1.0 - distance)
+        results.append({
+            "chunk_id": p.get("chunk_id"),
+            "score":    score,
+            "payload":  p,
+            "leann_id": str(key),
+        })
 
-    return [
-        {
-            "chunk_id": r.payload.get("chunk_id"),
-            "score":    float(r.score),
-            "payload":  r.payload,
-            "leann_id": str(r.id),
-        }
-        for r in results
-    ]
+    return results
 
 
 def delete_vector(index_name: IndexName, leann_id: str) -> None:
-    """Remove a vector from the index by its LEANN node ID."""
-    idx = _get_index(index_name)
-    idx.delete(leann_id)
-    idx.save()
+    with _get_lock(index_name):
+        idx, payload, _ = _get_index(index_name)
+        key = index_name.value
+        iid = int(leann_id)
+        idx.remove(iid)
+        _payloads[key].pop(iid, None)
+        _save(index_name)
 
 
 def index_size(index_name: IndexName) -> int:
-    """Return the number of vectors in the index."""
     try:
-        idx = _get_index(index_name)
+        idx, _, _ = _get_index(index_name)
         return len(idx)
     except Exception:
         return 0
 
 
 def index_path(index_name: IndexName) -> Path:
-    return _index_dir() / f"{index_name.value}.leann"
+    return _index_file(index_name)

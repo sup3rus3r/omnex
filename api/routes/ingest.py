@@ -12,10 +12,12 @@ import shutil
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi import Form
 from typing import List
 from pydantic import BaseModel
+
+from api.auth import require_api_key
 
 router = APIRouter()
 
@@ -29,7 +31,7 @@ class IngestRequest(BaseModel):
     workers: int = 4
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_api_key)])
 async def upload_and_ingest(
     files: List[UploadFile] = File(...),
     workers: int = Form(default=4),
@@ -72,7 +74,7 @@ async def upload_and_ingest(
     }
 
 
-@router.post("/trigger")
+@router.post("/trigger", dependencies=[Depends(require_api_key)])
 async def trigger_ingest(req: IngestRequest):
     """
     Trigger ingestion for a file, folder, or drive path.

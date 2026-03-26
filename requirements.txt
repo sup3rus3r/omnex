@@ -24,7 +24,7 @@ insightface>=0.7.3            # ArcFace detection + 512-dim identity embeddings 
 onnxruntime-gpu>=1.19.0       # ONNX GPU runtime for InsightFace
 
 # ── Vector Index ──────────────────────────────────────────────────────────────
-leann>=0.1.0                  # File-based vector index, 97% storage savings vs Qdrant
+usearch>=2.9.0                # Compressed file-based vector index, i8 quantization (~4x vs float32)
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 pymongo>=4.7.0                # MongoDB client
@@ -47,3 +47,6 @@ aiofiles>=23.2.0              # Async file I/O
 
 # ── Hashing & Utilities ───────────────────────────────────────────────────────
 xxhash>=3.4.0                 # Fast content hashing for deduplication
+
+# ── Remote Access ─────────────────────────────────────────────────────────────
+pyngrok>=7.0.0                # Auto ngrok tunnel for remote access

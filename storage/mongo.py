@@ -53,6 +53,10 @@ def _ensure_indexes(db: Database) -> None:
     ingestion = db["ingestion_state"]
     ingestion.create_index([("source_path", ASCENDING)], unique=True)
 
+    sessions = db["sessions"]
+    sessions.create_index([("session_id", ASCENDING)], unique=True)
+    sessions.create_index([("updated_at", DESCENDING)])
+
 
 # ── Chunk operations ──────────────────────────────────────────────────────────
 
@@ -169,3 +173,52 @@ def build_chunk_doc(
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ── Session / conversation memory ─────────────────────────────────────────────
+
+def _ensure_session_index(db: Database) -> None:
+    sessions = db["sessions"]
+    sessions.create_index([("session_id", ASCENDING)], unique=True)
+    sessions.create_index([("updated_at", DESCENDING)])
+
+
+def get_session(session_id: str) -> dict | None:
+    return get_collection("sessions").find_one({"session_id": session_id})
+
+
+def upsert_session_turn(session_id: str, role: str, content: str) -> None:
+    """Append a message turn to the session's conversation history."""
+    get_collection("sessions").update_one(
+        {"session_id": session_id},
+        {
+            "$push": {"messages": {"role": role, "content": content, "ts": _now()}},
+            "$set":  {"updated_at": _now()},
+            "$setOnInsert": {"created_at": _now()},
+        },
+        upsert=True,
+    )
+
+
+def get_session_messages(session_id: str, last_n: int = 10) -> list[dict]:
+    """Return the last N turns (role, content) for this session."""
+    doc = get_collection("sessions").find_one({"session_id": session_id})
+    if not doc:
+        return []
+    msgs = doc.get("messages", [])
+    return [{"role": m["role"], "content": m["content"]} for m in msgs[-last_n:]]
+
+
+def create_session() -> str:
+    """Create a new session and return its ID."""
+    import uuid
+    session_id = str(uuid.uuid4())
+    db = get_db()
+    _ensure_session_index(db)
+    db["sessions"].insert_one({
+        "session_id": session_id,
+        "messages":   [],
+        "created_at": _now(),
+        "updated_at": _now(),
+    })
+    return session_id

@@ -64,6 +64,27 @@ LOCATION_KEYWORDS = {"in", "at", "from", "near", "around"}
 CODE_KEYWORDS = {"code", "function", "class", "script", "module", "implementation", "def", "import"}
 
 
+_CONVERSATIONAL = {
+    "hi", "hello", "hey", "sup", "yo", "howdy",
+    "thanks", "thank you", "cheers", "ok", "okay",
+    "bye", "goodbye", "cya", "later",
+    "how are you", "what's up", "whats up",
+    "good morning", "good afternoon", "good evening",
+    "who are you", "what are you", "what can you do",
+}
+
+def is_conversational(query: str) -> bool:
+    """Returns True for short greetings/chitchat that shouldn't trigger a search."""
+    q = query.strip().lower().rstrip("!?.")
+    if q in _CONVERSATIONAL:
+        return True
+    # Short (≤4 words) with no content words
+    words = q.split()
+    if len(words) <= 2 and not any(w in words for w in ("show", "find", "search", "what", "where", "when", "who", "how", "list", "get")):
+        return True
+    return False
+
+
 def detect_intent(query: str) -> dict:
     q = query.lower()
     words = set(q.split())
@@ -118,6 +139,7 @@ async def search(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     session_id: str | None = None,
+    history: list[dict] | None = None,
 ) -> QueryResponse:
     """
     Execute a natural language query against the Omnex index.
@@ -126,6 +148,16 @@ async def search(
     from storage.mongo import get_chunk_by_id
 
     from embeddings.tagger import extract_tag_filters
+
+    # Skip search entirely for greetings / chitchat
+    if is_conversational(query):
+        llm_response = await _ask_llm(query, [], history=history or [])
+        return QueryResponse(
+            query=query, results=[], total=0,
+            llm_response=llm_response,
+            suggested_refinements=[],
+            session_id=session_id,
+        )
 
     intent = detect_intent(query)
     tag_filters = extract_tag_filters(query)  # e.g. ["year-2023", "topic-travel"]
@@ -149,9 +181,8 @@ async def search(
         audio_hits = leann_search(IndexName.AUDIO, text_vec, top_k=top_k)
         raw_results.extend(audio_hits)
 
-    # Code search — CodeBERT embeds the NL query into code vector space
-    # CodeBERT is trained on NL+code pairs so NL queries work natively
-    if intent["code"] or not intent["visual"]:
+    # Code search — only when query explicitly mentions code concepts
+    if intent["code"]:
         from embeddings.code import embed as embed_code
         code_vec = embed_code(query).tolist()
         code_hits = leann_search(IndexName.CODE, code_vec, top_k=top_k)
@@ -236,7 +267,7 @@ async def search(
     # LLM response
     llm_response = None
     if results:
-        llm_response = await _ask_llm(query, results[:5])
+        llm_response = await _ask_llm(query, results[:5], history=history or [])
 
     refinements = _suggest_refinements(query, intent, results)
 
@@ -276,21 +307,25 @@ async def _resolve_person_chunks(name: str) -> set[str]:
 
 # ── LLM integration ───────────────────────────────────────────────────────────
 
-async def _ask_llm(query: str, results: list[QueryResult]) -> str | None:
-    """Pass top results as context to the configured LLM provider."""
+async def _ask_llm(
+    query: str,
+    results: list[QueryResult],
+    history: list[dict] | None = None,
+) -> str | None:
+    """Pass top results + conversation history to the configured LLM provider."""
     import os
     provider = os.getenv("LLM_PROVIDER", "local").lower()
 
-    context = _build_context(results)
-    prompt  = _build_prompt(query, context)
+    context  = _build_context(results)
+    messages = _build_messages(query, context, history or [])
 
     try:
         if provider == "anthropic":
-            return await _llm_anthropic(prompt)
+            return await _llm_anthropic(messages)
         elif provider == "openai":
-            return await _llm_openai(prompt)
+            return await _llm_openai(messages)
         else:
-            return await _llm_local(prompt)
+            return await _llm_local(messages)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"LLM call failed: {e}")
@@ -307,33 +342,47 @@ def _build_context(results: list[QueryResult]) -> str:
     return "\n\n".join(parts)
 
 
-def _build_prompt(query: str, context: str) -> str:
-    return (
-        f"You are Omnex, an AI memory assistant. "
-        f"The user asked: \"{query}\"\n\n"
-        f"Here are the most relevant items from their personal data:\n\n"
-        f"{context}\n\n"
-        f"Provide a concise, helpful response. "
-        f"Reference specific items by number. "
-        f"If you suggest the user look at something specific, say so clearly."
-    )
+_SYSTEM_PROMPT = (
+    "You are Omnex, an AI memory assistant. "
+    "You help users recall and understand their personal data — documents, photos, code, audio, and video. "
+    "When relevant search results are provided, reference them by number. "
+    "Be concise and specific. If the user asks a follow-up, use conversation history to answer in context."
+)
 
 
-async def _llm_local(prompt: str) -> str:
+def _build_messages(query: str, context: str, history: list[dict]) -> list[dict]:
+    """Build a messages array with system prompt, prior history, and current turn."""
+    messages: list[dict] = []
+
+    # Prior conversation turns (role: user/assistant)
+    for turn in history:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+
+    # Current user turn — include retrieved context
+    user_content = f'User query: "{query}"'
+    if context:
+        user_content += f"\n\nRelevant items from personal data:\n\n{context}"
+    user_content += "\n\nProvide a concise, helpful response. Reference items by number where relevant."
+    messages.append({"role": "user", "content": user_content})
+
+    return messages
+
+
+async def _llm_local(messages: list[dict]) -> str:
     import httpx, os
     host  = os.getenv("LOCAL_LLM_HOST", "http://localhost:11434")
     model = os.getenv("LOCAL_LLM_MODEL", "phi3:mini")
 
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            f"{host}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            f"{host}/api/chat",
+            json={"model": model, "messages": messages, "stream": False},
         )
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        return resp.json().get("message", {}).get("content", "")
 
 
-async def _llm_anthropic(prompt: str) -> str:
+async def _llm_anthropic(messages: list[dict]) -> str:
     import anthropic, os
     client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     model  = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
@@ -341,20 +390,22 @@ async def _llm_anthropic(prompt: str) -> str:
     message = await client.messages.create(
         model=model,
         max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+        system=_SYSTEM_PROMPT,
+        messages=messages,
     )
     return message.content[0].text
 
 
-async def _llm_openai(prompt: str) -> str:
+async def _llm_openai(messages: list[dict]) -> str:
     from openai import AsyncOpenAI
     import os
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    model  = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+    all_msgs = [{"role": "system", "content": _SYSTEM_PROMPT}] + messages
     resp = await client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=all_msgs,
         max_tokens=1024,
     )
     return resp.choices[0].message.content
