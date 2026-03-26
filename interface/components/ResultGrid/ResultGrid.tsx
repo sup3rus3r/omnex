@@ -1,7 +1,7 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { FileText, Code2, Music, Video, File, Play, Clock, MapPin, Brain } from 'lucide-react'
+import { FileText, Code2, Music, Video, File, Play, Clock, MapPin, Brain, Trash2 } from 'lucide-react'
 import { QueryResult } from '@/app/page'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
@@ -10,6 +10,8 @@ interface Props {
   results:  QueryResult[]
   onSelect: (chunk: QueryResult) => void
   selected: QueryResult | null
+  onDelete?: (sourcePath: string) => void
+  deleting?: string | null  // source_path currently being deleted
 }
 
 const container = {
@@ -21,7 +23,7 @@ const item = {
   show:   { opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.16, 1, 0.3, 1] as any } },
 }
 
-export default function ResultGrid({ results, onSelect, selected }: Props) {
+export default function ResultGrid({ results, onSelect, selected, onDelete, deleting }: Props) {
   if (!results.length) {
     return (
       <div style={{ padding: '20px 0', textAlign: 'center' }}>
@@ -91,6 +93,13 @@ export default function ResultGrid({ results, onSelect, selected }: Props) {
                     <MapPin size={8} color="rgba(255,255,255,0.6)" />
                   </div>
                 )}
+                {/* Delete */}
+                {onDelete && (
+                  <DeleteOverlayBtn
+                    isDeleting={deleting === r.source_path}
+                    onClick={(e) => { e.stopPropagation(); onDelete(r.source_path) }}
+                  />
+                )}
               </motion.button>
             ))}
           </motion.div>
@@ -159,6 +168,12 @@ export default function ResultGrid({ results, onSelect, selected }: Props) {
                     </div>
                   )}
                   <MatchBadge score={r.score} />
+                  {onDelete && (
+                    <DeleteOverlayBtn
+                      isDeleting={deleting === r.source_path}
+                      onClick={(e) => { e.stopPropagation(); onDelete(r.source_path) }}
+                    />
+                  )}
                 </motion.button>
               )
             })}
@@ -224,18 +239,47 @@ export default function ResultGrid({ results, onSelect, selected }: Props) {
                     )}
                   </div>
 
-                  <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <div style={{ width: 28, height: 3, borderRadius: 2, overflow: 'hidden', background: '#1a1a2e' }}>
-                      <div style={{
-                        height: '100%', borderRadius: 2,
-                        width: `${Math.round(r.score * 100)}%`,
-                        background: `hsl(${140 + (1 - r.score) * (-100)}, 60%, 55%)`,
-                      }} />
+                  {r.score > 0 && (
+                    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <div style={{ width: 28, height: 3, borderRadius: 2, overflow: 'hidden', background: '#1a1a2e' }}>
+                        <div style={{
+                          height: '100%', borderRadius: 2,
+                          width: `${Math.round(r.score * 100)}%`,
+                          background: `hsl(${140 + (1 - r.score) * (-100)}, 60%, 55%)`,
+                        }} />
+                      </div>
+                      <span style={{ fontSize: 10, color: '#383850', fontFamily: 'JetBrains Mono, monospace' }}>
+                        {Math.round(r.score * 100)}
+                      </span>
                     </div>
-                    <span style={{ fontSize: 10, color: '#383850', fontFamily: 'JetBrains Mono, monospace' }}>
-                      {Math.round(r.score * 100)}
-                    </span>
-                  </div>
+                  )}
+                  {onDelete && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDelete(r.source_path) }}
+                      title="Delete from index"
+                      style={{
+                        flexShrink: 0, width: 24, height: 24, borderRadius: 6,
+                        border: '1px solid transparent', background: 'transparent',
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: deleting === r.source_path ? '#f87171' : '#383850',
+                        transition: 'color 0.12s, border-color 0.12s',
+                      }}
+                      onMouseEnter={(e) => {
+                        const b = e.currentTarget as HTMLButtonElement
+                        b.style.color = '#f87171'
+                        b.style.borderColor = 'rgba(248,113,113,0.2)'
+                      }}
+                      onMouseLeave={(e) => {
+                        if (deleting !== r.source_path) {
+                          const b = e.currentTarget as HTMLButtonElement
+                          b.style.color = '#383850'
+                          b.style.borderColor = 'transparent'
+                        }
+                      }}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
                 </motion.button>
               )
             })}
@@ -323,22 +367,52 @@ export default function ResultGrid({ results, onSelect, selected }: Props) {
                     )}
                   </div>
 
-                  {/* Score */}
-                  <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <div style={{
-                      width: 28, height: 3, borderRadius: 2, overflow: 'hidden',
-                      background: '#1a1a2e',
-                    }}>
+                  {/* Score — only shown for vector search results */}
+                  {r.score > 0 && (
+                    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4 }}>
                       <div style={{
-                        height: '100%', borderRadius: 2,
-                        width: `${Math.round(r.score * 100)}%`,
-                        background: `hsl(${140 + (1 - r.score) * (-100)}, 60%, 55%)`,
-                      }} />
+                        width: 28, height: 3, borderRadius: 2, overflow: 'hidden',
+                        background: '#1a1a2e',
+                      }}>
+                        <div style={{
+                          height: '100%', borderRadius: 2,
+                          width: `${Math.round(r.score * 100)}%`,
+                          background: `hsl(${140 + (1 - r.score) * (-100)}, 60%, 55%)`,
+                        }} />
+                      </div>
+                      <span style={{ fontSize: 10, color: '#383850', fontFamily: 'JetBrains Mono, monospace' }}>
+                        {Math.round(r.score * 100)}
+                      </span>
                     </div>
-                    <span style={{ fontSize: 10, color: '#383850', fontFamily: 'JetBrains Mono, monospace' }}>
-                      {Math.round(r.score * 100)}
-                    </span>
-                  </div>
+                  )}
+                  {/* Inline delete for list rows */}
+                  {onDelete && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDelete(r.source_path) }}
+                      title="Delete from index"
+                      style={{
+                        flexShrink: 0, width: 24, height: 24, borderRadius: 6,
+                        border: '1px solid transparent', background: 'transparent',
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: deleting === r.source_path ? '#f87171' : '#383850',
+                        transition: 'color 0.12s, border-color 0.12s',
+                      }}
+                      onMouseEnter={(e) => {
+                        const b = e.currentTarget as HTMLButtonElement
+                        b.style.color = '#f87171'
+                        b.style.borderColor = 'rgba(248,113,113,0.2)'
+                      }}
+                      onMouseLeave={(e) => {
+                        if (deleting !== r.source_path) {
+                          const b = e.currentTarget as HTMLButtonElement
+                          b.style.color = '#383850'
+                          b.style.borderColor = 'transparent'
+                        }
+                      }}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
                 </motion.button>
               )
             })}
@@ -382,4 +456,28 @@ function FileTypeIcon({ type }: { type: string }) {
   if (type === 'video')       return <Video    size={12} style={{ color: '#a78bfa' }} />
   if (type === 'observation') return <Brain    size={12} style={{ color: '#a78bfa' }} />
   return <File size={12} style={style} />
+}
+
+function DeleteOverlayBtn({ isDeleting, onClick }: { isDeleting: boolean; onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Delete from index"
+      style={{
+        position: 'absolute', top: 5, left: 5,
+        width: 22, height: 22, borderRadius: 6,
+        border: '1px solid rgba(248,113,113,0.3)',
+        background: isDeleting ? 'rgba(248,113,113,0.2)' : 'rgba(0,0,0,0.65)',
+        backdropFilter: 'blur(4px)',
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: '#f87171', opacity: isDeleting ? 1 : 0,
+        transition: 'opacity 0.15s',
+        zIndex: 10,
+      }}
+      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = '1' }}
+      onMouseLeave={(e) => { if (!isDeleting) (e.currentTarget as HTMLButtonElement).style.opacity = '0' }}
+    >
+      <Trash2 size={10} />
+    </button>
+  )
 }

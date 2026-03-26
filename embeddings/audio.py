@@ -24,8 +24,10 @@ def _get_model():
     name = os.getenv("WHISPER_MODEL", "small")
     if _model is None or _model_name != name:
         import whisper
-        logger.info(f"Loading Whisper model: {name}")
-        _model = whisper.load_model(name)
+        cache = os.getenv("WHISPER_CACHE", "/data/models/whisper")
+        Path(cache).mkdir(parents=True, exist_ok=True)
+        logger.info(f"Loading Whisper model: {name} (cache: {cache})")
+        _model = whisper.load_model(name, download_root=cache)
         _model_name = name
     return _model
 

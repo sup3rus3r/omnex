@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   FolderOpen, HardDrive, File, CheckCircle2, AlertCircle,
   Loader2, ArrowRight, Zap, Database, Image, Video, Music,
-  FileText, Code2, Activity, Upload, StopCircle, Trash2, ChevronDown, ChevronRight
+  FileText, Code2, Activity, Upload, StopCircle, Trash2, ChevronDown, ChevronRight,
+  Eye, EyeOff, Plus
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
@@ -24,9 +25,10 @@ interface IngestionStatus {
 
 interface Props {
   onDone: () => void
+  apiKey?: string | null
 }
 
-export default function IngestionPanel({ onDone }: Props) {
+export default function IngestionPanel({ onDone, apiKey }: Props) {
   const [scope,      setScope]     = useState<Scope>('folder')
   const [path,       setPath]      = useState('')
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null)
@@ -39,6 +41,12 @@ export default function IngestionPanel({ onDone }: Props) {
   const logRef     = useRef<HTMLDivElement>(null)
   const fileInputRef   = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+
+  function authFetch(url: string, init: RequestInit = {}) {
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) }
+    if (apiKey) headers['X-API-Key'] = apiKey
+    return fetch(url, { ...init, headers })
+  }
 
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -67,7 +75,7 @@ export default function IngestionPanel({ onDone }: Props) {
         const form = new FormData()
         Array.from(uploadFiles).forEach(f => form.append('files', f, f.webkitRelativePath || f.name))
         form.append('workers', '4')
-        const up = await fetch(`${API}/ingest/upload`, { method: 'POST', body: form })
+        const up = await authFetch(`${API}/ingest/upload`, { method: 'POST', body: form })
         if (!up.ok) {
           const err = await up.json().catch(() => ({ detail: up.statusText }))
           throw new Error(err.detail || 'Upload failed')
@@ -76,7 +84,7 @@ export default function IngestionPanel({ onDone }: Props) {
         ingestPath = upData.path
         addLog(`Uploaded ${upData.files} file(s) — pipeline started…`)
       } else {
-        await fetch(`${API}/ingest/trigger`, {
+        await authFetch(`${API}/ingest/trigger`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: ingestPath, workers: 4 }),
@@ -86,7 +94,7 @@ export default function IngestionPanel({ onDone }: Props) {
 
       pollRef.current = setInterval(async () => {
         try {
-          const res  = await fetch(`${API}/ingest/status?path=${encodeURIComponent(ingestPath)}`)
+          const res  = await authFetch(`${API}/ingest/status?path=${encodeURIComponent(ingestPath)}`)
           const data = await res.json()
           setStatus(data)
           if (data.processed > 0 && data.total_files > 0) {
@@ -112,7 +120,7 @@ export default function IngestionPanel({ onDone }: Props) {
 
   async function cancelIngestion() {
     try {
-      await fetch(`${API}/ingest/cancel`, { method: 'POST' })
+      await authFetch(`${API}/ingest/cancel`, { method: 'POST' })
       addLog('Cancel requested — stopping after current file…')
       stopPolling()
       setRunning(false)
@@ -490,8 +498,11 @@ export default function IngestionPanel({ onDone }: Props) {
               </div>
             )}
 
+            {/* Watched folders */}
+            <WatchedFolders api={API} apiKey={apiKey} />
+
             {/* Indexed sources manager */}
-            <IndexedSources api={API} />
+            <IndexedSources api={API} apiKey={apiKey} />
           </motion.div>
         </div>
       </div>
@@ -510,21 +521,107 @@ function TypeIcon({ type }: { type: string }) {
 }
 
 /* ── Indexed Sources Manager ──────────────────────────────────────────────── */
-function IndexedSources({ api }: { api: string }) {
-  const [open,     setOpen]     = useState(false)
-  const [sources,  setSources]  = useState<{source_path: string, count: number, status: string}[]>([])
-  const [loading,  setLoading]  = useState(false)
-  const [deleting, setDeleting] = useState<string | null>(null)
+/* ── Confirm Dialog ─────────────────────────────────────────────────────────── */
+function ConfirmDialog({
+  message, detail, onConfirm, onCancel, confirmLabel = 'Delete', dangerous = true,
+}: {
+  message: string
+  detail?: string
+  onConfirm: () => void
+  onCancel: () => void
+  confirmLabel?: string
+  dangerous?: boolean
+}) {
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        style={{
+          position: 'fixed', inset: 0, zIndex: 200,
+          background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+        onClick={onCancel}
+      >
+        <motion.div
+          initial={{ scale: 0.92, opacity: 0, y: 12 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          exit={{ scale: 0.92, opacity: 0 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          onClick={e => e.stopPropagation()}
+          style={{
+            background: 'rgba(12,12,18,0.98)', backdropFilter: 'blur(20px)',
+            border: '1px solid #1a1a2e', borderRadius: 16,
+            padding: '24px 28px', minWidth: 320, maxWidth: 440,
+            boxShadow: '0 24px 80px rgba(0,0,0,0.8)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 20 }}>
+            <div style={{
+              width: 32, height: 32, borderRadius: 10, flexShrink: 0,
+              background: dangerous ? 'rgba(248,113,113,0.1)' : 'rgba(124,106,247,0.1)',
+              border: `1px solid ${dangerous ? 'rgba(248,113,113,0.25)' : 'rgba(124,106,247,0.25)'}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Trash2 size={14} color={dangerous ? '#f87171' : '#a78bfa'} />
+            </div>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>{message}</div>
+              {detail && <div style={{ fontSize: 12, color: '#505068', lineHeight: 1.6, wordBreak: 'break-all' }}>{detail}</div>}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              onClick={onCancel}
+              style={{
+                padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+                background: 'transparent', border: '1px solid #1a1a2e',
+                color: '#505068', fontSize: 13, fontFamily: 'inherit',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onConfirm}
+              style={{
+                padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+                background: dangerous ? 'rgba(248,113,113,0.12)' : 'rgba(124,106,247,0.12)',
+                border: `1px solid ${dangerous ? 'rgba(248,113,113,0.3)' : 'rgba(124,106,247,0.3)'}`,
+                color: dangerous ? '#f87171' : '#a78bfa',
+                fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
+              }}
+            >
+              {confirmLabel}
+            </button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  )
+}
+
+/* ── Indexed Sources ─────────────────────────────────────────────────────────── */
+function IndexedSources({ api, apiKey }: { api: string, apiKey?: string | null }) {
+  const [open,        setOpen]        = useState(false)
+  const [sources,     setSources]     = useState<{source_path: string, count: number, status: string}[]>([])
+  const [loading,     setLoading]     = useState(false)
+  const [deleting,    setDeleting]    = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [confirmPath, setConfirmPath] = useState<string | null>(null)
+
+  function authFetch(url: string, init: RequestInit = {}) {
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) }
+    if (apiKey) headers['X-API-Key'] = apiKey
+    return fetch(url, { ...init, headers })
+  }
 
   async function load() {
     setLoading(true)
     try {
       const res  = await fetch(`${api}/ingest/status`)
       const data = await res.json()
-      // Also get chunk counts per source
-      const statsRes  = await fetch(`${api}/stats`)
-      const statsData = await statsRes.json()
-
       const ingestion: any[] = data.ingestion || []
       setSources(ingestion.map((r: any) => ({
         source_path: r.source_path,
@@ -535,13 +632,24 @@ function IndexedSources({ api }: { api: string }) {
     setLoading(false)
   }
 
-  async function deleteSource(sourcePath: string) {
-    if (!confirm(`Remove all indexed data from:\n${sourcePath}\n\nThis cannot be undone.`)) return
+  async function confirmDelete(sourcePath: string) {
+    setConfirmPath(null)
     setDeleting(sourcePath)
+    setDeleteError(null)
     try {
-      const res = await fetch(`${api}/ingest/source?source_path=${encodeURIComponent(sourcePath)}`, { method: 'DELETE' })
-      if (res.ok) setSources(s => s.filter(x => x.source_path !== sourcePath))
-    } catch {}
+      const res = await authFetch(
+        `${api}/ingest/source?source_path=${encodeURIComponent(sourcePath)}`,
+        { method: 'DELETE' }
+      )
+      if (res.ok) {
+        setSources(s => s.filter(x => x.source_path !== sourcePath))
+      } else {
+        const body = await res.json().catch(() => ({}))
+        setDeleteError(body.detail || `Error ${res.status}`)
+      }
+    } catch (e: any) {
+      setDeleteError(e?.message || 'Network error')
+    }
     setDeleting(null)
   }
 
@@ -552,6 +660,17 @@ function IndexedSources({ api }: { api: string }) {
 
   return (
     <div style={{ marginTop: 28 }}>
+      {/* Custom confirm dialog */}
+      {confirmPath && (
+        <ConfirmDialog
+          message="Remove from index?"
+          detail={confirmPath}
+          confirmLabel="Remove"
+          onConfirm={() => confirmDelete(confirmPath)}
+          onCancel={() => setConfirmPath(null)}
+        />
+      )}
+
       <button
         onClick={toggle}
         style={{
@@ -564,6 +683,12 @@ function IndexedSources({ api }: { api: string }) {
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         Manage indexed sources
       </button>
+
+      {deleteError && (
+        <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', fontSize: 11, color: '#f87171' }}>
+          Delete failed: {deleteError}
+        </div>
+      )}
 
       {open && (
         <div style={{ border: '1px solid #1a1a2e', borderRadius: 10, overflow: 'hidden' }}>
@@ -583,7 +708,8 @@ function IndexedSources({ api }: { api: string }) {
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '10px 14px',
                   borderBottom: i < sources.length - 1 ? '1px solid #1a1a2e' : 'none',
-                  background: 'rgba(10,10,15,0.6)',
+                  background: deleting === s.source_path ? 'rgba(248,113,113,0.04)' : 'rgba(10,10,15,0.6)',
+                  transition: 'background 0.2s',
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -591,20 +717,20 @@ function IndexedSources({ api }: { api: string }) {
                     {s.source_path}
                   </div>
                   <div style={{ fontSize: 10, color: '#505068', marginTop: 2 }}>
-                    {s.count.toLocaleString()} chunks · {s.status}
+                    {s.count.toLocaleString()} chunks · {deleting === s.source_path ? 'removing…' : s.status}
                   </div>
                 </div>
                 <button
-                  onClick={() => deleteSource(s.source_path)}
-                  disabled={deleting === s.source_path}
+                  onClick={() => { setDeleteError(null); setConfirmPath(s.source_path) }}
+                  disabled={!!deleting}
                   title="Remove from index"
                   style={{
                     display: 'flex', alignItems: 'center', gap: 4,
                     padding: '5px 10px', borderRadius: 6, flexShrink: 0,
                     background: 'rgba(248,113,113,0.06)',
                     border: '1px solid rgba(248,113,113,0.15)',
-                    color: deleting === s.source_path ? '#383850' : '#f87171',
-                    fontSize: 11, cursor: deleting === s.source_path ? 'not-allowed' : 'pointer',
+                    color: deleting ? '#383850' : '#f87171',
+                    fontSize: 11, cursor: deleting ? 'not-allowed' : 'pointer',
                     fontFamily: 'inherit',
                   }}
                 >
@@ -612,7 +738,200 @@ function IndexedSources({ api }: { api: string }) {
                     ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
                     : <Trash2 size={11} />
                   }
-                  Remove
+                  {deleting === s.source_path ? 'Removing…' : 'Remove'}
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Watched Folders ─────────────────────────────────────────────────────────── */
+function WatchedFolders({ api, apiKey }: { api: string, apiKey?: string | null }) {
+  const [open,      setOpen]      = useState(false)
+  const [watches,   setWatches]   = useState<{path: string, workers: number, alive: boolean}[]>([])
+  const [loading,   setLoading]   = useState(false)
+  const [adding,    setAdding]    = useState(false)
+  const [newPath,   setNewPath]   = useState('')
+  const [stopping,  setStopping]  = useState<string | null>(null)
+  const [error,     setError]     = useState<string | null>(null)
+
+  function authFetch(url: string, init: RequestInit = {}) {
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> || {}) }
+    if (apiKey) headers['X-API-Key'] = apiKey
+    return fetch(url, { ...init, headers })
+  }
+
+  async function load() {
+    setLoading(true)
+    try {
+      const res  = await fetch(`${api}/ingest/watches`)
+      const data = await res.json()
+      setWatches(data.watches || [])
+    } catch {}
+    setLoading(false)
+  }
+
+  async function addWatch() {
+    if (!newPath.trim()) return
+    setError(null); setAdding(true)
+    try {
+      const res = await authFetch(`${api}/ingest/watch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: newPath.trim(), workers: 2 }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.detail || `Error ${res.status}`); return }
+      setNewPath('')
+      await load()
+    } catch (e: any) {
+      setError(e?.message || 'Network error')
+    }
+    setAdding(false)
+  }
+
+  async function stopWatch(path: string) {
+    setError(null); setStopping(path)
+    try {
+      const res = await authFetch(`${api}/ingest/watch?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+      if (res.ok) {
+        setWatches(w => w.filter(x => x.path !== path))
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setError(data.detail || `Error ${res.status}`)
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Network error')
+    }
+    setStopping(null)
+  }
+
+  function toggle() {
+    if (!open) load()
+    setOpen(o => !o)
+  }
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <button
+        onClick={toggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          padding: '10px 0', color: '#505068', fontSize: 11,
+          letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'inherit',
+        }}
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <Eye size={11} />
+        Auto-watch folders
+        {watches.length > 0 && (
+          <span style={{
+            marginLeft: 4, padding: '1px 6px', borderRadius: 4,
+            background: 'rgba(124,106,247,0.15)', color: '#7c6af7', fontSize: 10,
+          }}>
+            {watches.length} active
+          </span>
+        )}
+      </button>
+
+      {error && (
+        <div style={{ marginBottom: 8, padding: '8px 12px', borderRadius: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', fontSize: 11, color: '#f87171' }}>
+          {error}
+        </div>
+      )}
+
+      {open && (
+        <div style={{ border: '1px solid #1a1a2e', borderRadius: 10, overflow: 'hidden' }}>
+          {/* Add new watch */}
+          <div style={{ padding: '12px 14px', borderBottom: '1px solid #1a1a2e', background: 'rgba(10,10,15,0.6)' }}>
+            <div style={{ fontSize: 11, color: '#383850', marginBottom: 8 }}>
+              Watch a folder — new files are indexed automatically as they appear.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={newPath}
+                onChange={e => setNewPath(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addWatch()}
+                placeholder="/path/to/folder"
+                style={{
+                  flex: 1, padding: '7px 10px', borderRadius: 7, fontSize: 12,
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid #1a1a2e',
+                  color: '#e8e8f0', fontFamily: 'JetBrains Mono, monospace', outline: 'none',
+                }}
+              />
+              <button
+                onClick={addWatch}
+                disabled={adding || !newPath.trim()}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '7px 12px', borderRadius: 7, cursor: adding ? 'not-allowed' : 'pointer',
+                  background: 'rgba(124,106,247,0.12)', border: '1px solid rgba(124,106,247,0.25)',
+                  color: '#a78bfa', fontSize: 12, fontFamily: 'inherit', flexShrink: 0,
+                }}
+              >
+                {adding ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Plus size={12} />}
+                Watch
+              </button>
+            </div>
+          </div>
+
+          {/* Watch list */}
+          {loading ? (
+            <div style={{ padding: '16px', fontSize: 12, color: '#505068', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Loading…
+            </div>
+          ) : watches.length === 0 ? (
+            <div style={{ padding: '16px', fontSize: 12, color: '#383850', textAlign: 'center' }}>
+              No folders being watched.
+            </div>
+          ) : (
+            watches.map((w, i) => (
+              <div
+                key={w.path}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 14px',
+                  borderBottom: i < watches.length - 1 ? '1px solid #1a1a2e' : 'none',
+                  background: 'rgba(10,10,15,0.6)',
+                }}
+              >
+                <div style={{
+                  width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                  background: w.alive ? '#4ade80' : '#f87171',
+                  boxShadow: w.alive ? '0 0 6px rgba(74,222,128,0.6)' : 'none',
+                }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'JetBrains Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {w.path}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#505068', marginTop: 2 }}>
+                    {w.alive ? 'Watching' : 'Inactive'} · {w.workers} worker{w.workers !== 1 ? 's' : ''}
+                  </div>
+                </div>
+                <button
+                  onClick={() => stopWatch(w.path)}
+                  disabled={!!stopping}
+                  title="Stop watching"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 4,
+                    padding: '5px 10px', borderRadius: 6, flexShrink: 0,
+                    background: 'rgba(248,113,113,0.06)',
+                    border: '1px solid rgba(248,113,113,0.15)',
+                    color: stopping ? '#383850' : '#f87171',
+                    fontSize: 11, cursor: stopping ? 'not-allowed' : 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {stopping === w.path
+                    ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                    : <EyeOff size={11} />
+                  }
+                  {stopping === w.path ? 'Stopping…' : 'Stop'}
                 </button>
               </div>
             ))

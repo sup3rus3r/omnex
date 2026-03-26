@@ -53,9 +53,13 @@ def _tunnel_via_cli(ngrok_bin: str, token: str, port: int) -> None:
     global _url, _error, _status
     import time, urllib.request, json
 
-    # Configure auth token
-    subprocess.run([ngrok_bin, "config", "add-authtoken", token],
-                   capture_output=True, timeout=10)
+    # Configure auth token (write directly to config file — avoids network call)
+    import pathlib, yaml as _yaml
+    ngrok_cfg_dir = pathlib.Path.home() / ".config" / "ngrok"
+    ngrok_cfg_dir.mkdir(parents=True, exist_ok=True)
+    ngrok_cfg = ngrok_cfg_dir / "ngrok.yml"
+    cfg_content = f"version: '2'\nauthtoken: {token}\n"
+    ngrok_cfg.write_text(cfg_content)
 
     # Start ngrok in background
     proc = subprocess.Popen(

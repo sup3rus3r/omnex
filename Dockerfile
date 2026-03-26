@@ -1,4 +1,4 @@
-# Omnex API — CUDA 12.4 runtime base (provides libcudart.so.12 for Qwen TTS)
+# Omnex API — CUDA 12.4 runtime base
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 # Install Python 3.11
@@ -15,6 +15,7 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
 
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     # libmagic for file type detection
     libmagic1 \
     # ffmpeg for audio/video processing
@@ -61,6 +62,13 @@ RUN grep -vE "^torch(vision|audio)?[=><!]" requirements.txt > /tmp/req_notorch.t
 
 # InsightFace + ONNX GPU runtime
 RUN pip install --no-cache-dir insightface>=0.7.3 onnxruntime-gpu>=1.19.0
+
+
+# VibeVoice-Realtime-0.5B — realtime streaming TTS (~300ms first token)
+# Runs in an isolated subprocess at runtime to avoid heap conflicts with onnxruntime-gpu
+RUN git clone --depth 1 https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B /opt/vibevoice \
+    && pip install --no-cache-dir -e "/opt/vibevoice[streamingtts]" \
+    || echo "VibeVoice install failed — will fall back to Kokoro at runtime"
 
 # usearch — compressed file-based vector index (i8 quantization, replaces leann)
 RUN pip install --no-cache-dir usearch>=2.9.0

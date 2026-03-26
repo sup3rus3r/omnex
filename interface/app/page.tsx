@@ -58,6 +58,7 @@ const MODEL_DISPLAY: Record<string, string> = {
 }
 
 export default function Home() {
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null) // chunk_id pending delete
   const [setupDone,     setSetupDone]     = useState<boolean>(true)
   const [modelStatuses, setModelStatuses] = useState<{id: string, name: string, status: string}[]>([])
   const [view,          setView]          = useState<NavView>('recall')
@@ -85,6 +86,9 @@ export default function Home() {
   const [apiReady,      setApiReady]      = useState<boolean | null>(null)
   const [focused,       setFocused]       = useState(false)
   const [sessionId,     setSessionId]     = useState<string | null>(null)
+  const [previewWidth,  setPreviewWidth]  = useState(420)
+  const previewDragRef  = useRef<{ startX: number; startW: number } | null>(null)
+  const [ttsVoice,      setTtsVoice]      = useState<string>('Emma')
   const [streamingText, setStreamingText] = useState('')
   const [ingestToast,   setIngestToast]   = useState<{path: string, pct: number, eta: number | null, fpm: number | null} | null>(null)
   const [expandNudge,   setExpandNudge]   = useState(false)
@@ -210,9 +214,10 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       const res = await apiFetch(`${API}/voice/speak`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ text }),
+        body:    JSON.stringify({ text, voice: ttsVoice }),
       })
       if (!res.ok) return
+      // Collect the streamed WAV (header + PCM chunks arrive incrementally)
       const blob = await res.blob()
       const url  = URL.createObjectURL(blob)
       const audio = new Audio(url)
@@ -224,7 +229,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       console.warn('TTS failed:', e)
       setIsSpeaking(false)
     }
-  }, [ttsEnabled])
+  }, [ttsEnabled, ttsVoice])
 
   async function handleQuery(query: string) {
     if (!query.trim() || loading) return
@@ -617,7 +622,10 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       </aside>
 
       {/* ── Main ────────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', position: 'relative' }}>
+
+        {/* Views column */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', minWidth: 0 }}>
 
         {/* Ambient background glow */}
         <div style={{
@@ -637,7 +645,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
               transition={{ duration: 0.2 }}
               style={{ flex: 1, overflow: 'hidden', position: 'relative', zIndex: 1 }}
             >
-              <IngestionPanel onDone={() => { setView('recall'); fetchStats() }} />
+              <IngestionPanel onDone={() => { setView('recall'); fetchStats() }} apiKey={apiKey} />
             </motion.div>
 
           ) : view === 'people' ? (
@@ -870,52 +878,6 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
                   </div>
                 </div>
 
-                {/* Preview pane */}
-                <AnimatePresence>
-                  {selectedChunk && (
-                    <motion.div
-                      initial={{ opacity: 0, x: 20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 20 }}
-                      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                      style={{
-                        width: 380, flexShrink: 0,
-                        borderLeft: '1px solid #1a1a2e',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                        <div style={{ padding: '10px 12px', borderBottom: '1px solid #1a1a2e', display: 'flex', justifyContent: 'flex-end' }}>
-                          <button
-                            onClick={async () => {
-                              if (!selectedChunk) return
-                              if (!confirm('Remove this item from your memory index?')) return
-                              const res = await apiFetch(`${API}/ingest/chunk/${selectedChunk.chunk_id}`, { method: 'DELETE' })
-                              if (res.ok) {
-                                setMessages(m => m.map(msg => ({
-                                  ...msg,
-                                  results: msg.results?.filter(r => r.chunk_id !== selectedChunk.chunk_id)
-                                })))
-                                setSelectedChunk(null)
-                              }
-                            }}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 5,
-                              padding: '5px 10px', borderRadius: 6,
-                              background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
-                              color: '#f87171', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
-                            }}
-                          >
-                            <X size={11} /> Remove from index
-                          </button>
-                        </div>
-                        <div style={{ flex: 1, overflow: 'hidden' }}>
-                          <PreviewPane chunk={selectedChunk} onClose={() => setSelectedChunk(null)} />
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             </motion.div>
 
@@ -949,17 +911,110 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
               animate={{ opacity: 1, y: 0 }}
               style={{ flex: 1, overflow: 'auto', padding: '32px 32px', position: 'relative', zIndex: 1 }}
             >
-              <SettingsPanel api={API} />
+              <SettingsPanel api={API} ttsVoice={ttsVoice} onTtsVoiceChange={setTtsVoice} />
             </motion.div>
 
           ) : null}
         </AnimatePresence>
-      </div>
+        </div>{/* end Views column */}
+
+        {/* ── Global resizable preview pane ─────────────────────────────── */}
+        <AnimatePresence>
+          {selectedChunk && (
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              style={{
+                width: previewWidth, flexShrink: 0,
+                borderLeft: '1px solid #1a1a2e',
+                overflow: 'hidden',
+                display: 'flex',
+                position: 'relative',
+              }}
+            >
+              {/* Drag-resize handle */}
+              <div
+                style={{
+                  position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
+                  cursor: 'col-resize', zIndex: 10,
+                  background: 'transparent',
+                  transition: 'background 0.15s',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(124,106,247,0.3)' }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'transparent' }}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  previewDragRef.current = { startX: e.clientX, startW: previewWidth }
+                  const onMove = (me: MouseEvent) => {
+                    if (!previewDragRef.current) return
+                    const delta = previewDragRef.current.startX - me.clientX
+                    const newW = Math.min(800, Math.max(280, previewDragRef.current.startW + delta))
+                    setPreviewWidth(newW)
+                  }
+                  const onUp = () => {
+                    previewDragRef.current = null
+                    window.removeEventListener('mousemove', onMove)
+                    window.removeEventListener('mouseup', onUp)
+                  }
+                  window.addEventListener('mousemove', onMove)
+                  window.addEventListener('mouseup', onUp)
+                }}
+              />
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Header with delete + close */}
+                <div style={{ padding: '10px 12px', borderBottom: '1px solid #1a1a2e', display: 'flex', justifyContent: 'flex-end', gap: 6, flexShrink: 0 }}>
+                  <button
+                    onClick={() => selectedChunk && setConfirmDelete(selectedChunk.chunk_id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      padding: '5px 10px', borderRadius: 6,
+                      background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
+                      color: '#f87171', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    <X size={11} /> Remove from index
+                  </button>
+                </div>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <PreviewPane chunk={selectedChunk} onClose={() => setSelectedChunk(null)} />
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+      </div>{/* end Main flex row */}
 
       {/* Identity manager modal */}
       <AnimatePresence>
         {showIdentity && (
           <IdentityManager onClose={() => { setShowIdentity(false); setView('recall') }} />
+        )}
+      </AnimatePresence>
+
+      {/* ── Chunk delete confirm ──────────────────────────────────── */}
+      <AnimatePresence>
+        {confirmDelete && (
+          <ConfirmDialog
+            message="Remove from memory?"
+            detail="This chunk will be deleted from the index and cannot be recovered."
+            confirmLabel="Remove"
+            onCancel={() => setConfirmDelete(null)}
+            onConfirm={async () => {
+              const id = confirmDelete
+              setConfirmDelete(null)
+              const res = await apiFetch(`${API}/ingest/chunk/${id}`, { method: 'DELETE' })
+              if (res.ok) {
+                setMessages(m => m.map(msg => ({
+                  ...msg,
+                  results: msg.results?.filter(r => r.chunk_id !== id)
+                })))
+                if (selectedChunk?.chunk_id === id) setSelectedChunk(null)
+              }
+            }}
+          />
         )}
       </AnimatePresence>
 
@@ -1097,15 +1152,23 @@ const TYPE_ICONS: Record<string, React.ReactNode> = {
 }
 
 function TimelinePanel({ api, onSelect, selected }: { api: string, onSelect: (c: any) => void, selected: any }) {
-  const [years,    setYears]    = useState<{year: number, count: number}[]>([])
-  const [selYear,  setSelYear]  = useState<number | null>(null)
-  const [months,   setMonths]   = useState<{month: number, count: number, types: string[]}[]>([])
-  const [selMonth, setSelMonth] = useState<number | null>(null)
-  const [chunks,   setChunks]   = useState<any[]>([])
-  const [total,    setTotal]    = useState(0)
-  const [page,     setPage]     = useState(1)
-  const [loading,  setLoading]  = useState(false)
+  const [years,      setYears]      = useState<{year: number, count: number}[]>([])
+  const [selYear,    setSelYear]    = useState<number | null>(null)
+  const [months,     setMonths]     = useState<{month: number, count: number, types: string[]}[]>([])
+  const [selMonth,   setSelMonth]   = useState<number | null>(null)
+  const [chunks,     setChunks]     = useState<any[]>([])
+  const [total,      setTotal]      = useState(0)
+  const [page,       setPage]       = useState(1)
+  const [loading,    setLoading]    = useState(false)
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
+  const [apiKey,     setApiKey]     = useState<string | null>(null)
+  const [confirmPath, setConfirmPath] = useState<string | null>(null)
+  const [deleting,   setDeleting]   = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`${api}/setup/tunnel`).then(r => r.json()).then(d => { if (d.api_key) setApiKey(d.api_key) }).catch(() => {})
+  }, [])
 
   useEffect(() => {
     fetch(`${api}/timeline/years`).then(r => r.json()).then(d => {
@@ -1133,6 +1196,29 @@ function TimelinePanel({ api, onSelect, selected }: { api: string, onSelect: (c:
     }).catch(() => {}).finally(() => setLoading(false))
   }, [selYear, selMonth, page, typeFilter])
 
+  async function handleDelete(sourcePath: string) {
+    setConfirmPath(null)
+    setDeleting(sourcePath)
+    setDeleteError(null)
+    try {
+      const headers: Record<string, string> = {}
+      if (apiKey) headers['X-API-Key'] = apiKey
+      const res = await fetch(`${api}/ingest/source?source_path=${encodeURIComponent(sourcePath)}`, {
+        method: 'DELETE', headers,
+      })
+      if (res.ok) {
+        setChunks(cs => cs.filter(c => c.source_path !== sourcePath))
+        setTotal(t => t - 1)
+      } else {
+        const body = await res.json().catch(() => ({}))
+        setDeleteError(body.detail || `Error ${res.status}`)
+      }
+    } catch (e: any) {
+      setDeleteError(e?.message || 'Network error')
+    }
+    setDeleting(null)
+  }
+
   const pillStyle = (active: boolean): React.CSSProperties => ({
     padding: '4px 10px', borderRadius: 20, cursor: 'pointer', fontSize: 11,
     border: `1px solid ${active ? '#7c6af7' : '#1a1a2e'}`,
@@ -1142,10 +1228,33 @@ function TimelinePanel({ api, onSelect, selected }: { api: string, onSelect: (c:
 
   return (
     <div style={{ maxWidth: 900 }}>
+      <AnimatePresence>
+        {confirmPath && (
+          <ConfirmDialog
+            message="Remove from index?"
+            detail={confirmPath.split(/[\\/]/).pop()}
+            confirmLabel="Remove"
+            onConfirm={() => handleDelete(confirmPath)}
+            onCancel={() => setConfirmPath(null)}
+          />
+        )}
+      </AnimatePresence>
+
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>Timeline</h2>
         <p style={{ fontSize: 13, color: '#505068' }}>Your memories organised by time.</p>
       </div>
+
+      {deleteError && (
+        <div style={{
+          marginBottom: 16, padding: '10px 14px', borderRadius: 8,
+          background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
+          fontSize: 12, color: '#f87171', display: 'flex', justifyContent: 'space-between',
+        }}>
+          <span>{deleteError}</span>
+          <button onClick={() => setDeleteError(null)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 11 }}>✕</button>
+        </div>
+      )}
 
       {/* Year selector */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -1184,7 +1293,13 @@ function TimelinePanel({ api, onSelect, selected }: { api: string, onSelect: (c:
       ) : (
         <>
           <div style={{ fontSize: 11, color: '#505068', marginBottom: 12 }}>{total} items</div>
-          <ResultGrid results={chunks} onSelect={onSelect} selected={selected} />
+          <ResultGrid
+            results={chunks}
+            onSelect={onSelect}
+            selected={selected}
+            onDelete={(path) => setConfirmPath(path)}
+            deleting={deleting}
+          />
           {total > 40 && (
             <div style={{ display: 'flex', gap: 8, marginTop: 16, alignItems: 'center' }}>
               <button disabled={page === 1} onClick={() => setPage(p => p - 1)}
@@ -1349,7 +1464,7 @@ function PeoplePanel({ api }: { api: string }) {
 }
 
 /* ── Settings Panel ─────────────────────────────────────────────────────────── */
-function SettingsPanel({ api }: { api: string }) {
+function SettingsPanel({ api, ttsVoice, onTtsVoiceChange }: { api: string, ttsVoice: string, onTtsVoiceChange: (v: string) => void }) {
   const [cfg,     setCfg]     = useState<any>(null)
   const [stats,   setStats]   = useState<any>(null)
   const [copied,  setCopied]  = useState<string | null>(null)
@@ -1443,18 +1558,54 @@ function SettingsPanel({ api }: { api: string }) {
 
       {/* TTS */}
       <Section title="Voice (TTS)">
-        <Row label="Kokoro voice (CPU)" hint={`Current: ${cfg?.tts_kokoro_voice ?? '—'}`}>
-          <span style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'monospace' }}>{cfg?.tts_kokoro_voice ?? '—'}</span>
+        {/* Engine status */}
+        <Row label="Active engine" hint={cfg?.gpu_enabled ? 'VibeVoice-Realtime on GPU' : 'Kokoro ONNX on CPU'}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <StatusDot on={true} />
+            <span style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'monospace' }}>
+              {cfg?.gpu_enabled ? 'VibeVoice' : 'Kokoro'}
+            </span>
+          </div>
         </Row>
-        <Row label="Qwen voice (GPU)" hint={`Current: ${cfg?.tts_qwen_voice ?? '—'}`}>
-          <span style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'monospace' }}>{cfg?.tts_qwen_voice ?? '—'}</span>
+
+        {/* VibeVoice voice picker — shown when GPU enabled */}
+        {cfg?.gpu_enabled !== false && (
+          <>
+            <div style={{ fontSize: 11, color: '#505068', marginBottom: 8 }}>
+              VibeVoice voice <span style={{ color: '#383850' }}>(active session)</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+              {(cfg?.tts_vibevoice_voices ?? ['Carter','Davis','Emma','Frank','Grace','Mike']).map((v: string) => (
+                <button
+                  key={v}
+                  onClick={() => onTtsVoiceChange(v)}
+                  style={{
+                    padding: '5px 12px', borderRadius: 6, cursor: 'pointer',
+                    border: `1px solid ${ttsVoice === v ? 'rgba(124,106,247,0.5)' : '#1a1a2e'}`,
+                    background: ttsVoice === v ? 'rgba(124,106,247,0.12)' : 'transparent',
+                    color: ttsVoice === v ? '#a78bfa' : '#505068',
+                    fontSize: 12, fontFamily: 'inherit', transition: 'all 0.12s',
+                  }}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: '#383850', marginBottom: 14 }}>
+              To set default: add <code style={{ color: '#505068' }}>VIBEVOICE_VOICE=Emma</code> to .env
+            </div>
+          </>
+        )}
+
+        {/* Kokoro fallback info */}
+        <Row label="Kokoro voice (CPU fallback)" hint={`Current: ${cfg?.tts_kokoro_voice ?? '—'}`}>
+          <span style={{ fontSize: 12, color: '#505068', fontFamily: 'monospace' }}>{cfg?.tts_kokoro_voice ?? '—'}</span>
         </Row>
-        <div style={{ fontSize: 11, color: '#505068', marginBottom: 6 }}>Kokoro voice options:</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
           {['af_heart','af_bella','af_sarah','af_nicole','am_adam','am_michael','bm_george','bf_emma'].map(v => (
             <button key={v} onClick={() => copy(`kokoro_${v}`, `TTS_KOKORO_VOICE=${v}`)}
-              style={{ padding: '3px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #1a1a2e', color: copied === `kokoro_${v}` ? '#34d399' : '#505068', fontSize: 10, cursor: 'pointer', fontFamily: 'monospace' }}>
-              {copied === `kokoro_${v}` ? '✓' : ''} {v}
+              style={{ padding: '3px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #1a1a2e', color: copied === `kokoro_${v}` ? '#34d399' : '#383850', fontSize: 10, cursor: 'pointer', fontFamily: 'monospace' }}>
+              {copied === `kokoro_${v}` ? '✓ copied' : v}
             </button>
           ))}
         </div>
@@ -1695,6 +1846,81 @@ function RemoteAccessPanel({ api }: { api: string }) {
   )
 }
 
+
+/* ── Confirm Dialog ────────────────────────────────────────────────────────── */
+function ConfirmDialog({
+  message, detail, confirmLabel = 'Delete', onConfirm, onCancel,
+}: {
+  message: string
+  detail?: string
+  confirmLabel?: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 300,
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ scale: 0.92, opacity: 0, y: 12 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'rgba(12,12,18,0.98)', backdropFilter: 'blur(20px)',
+          border: '1px solid #1a1a2e', borderRadius: 16,
+          padding: '24px 28px', minWidth: 320, maxWidth: 420,
+          boxShadow: '0 24px 80px rgba(0,0,0,0.8)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 20 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 10, flexShrink: 0,
+            background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.25)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <X size={14} color="#f87171" />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>{message}</div>
+            {detail && <div style={{ fontSize: 12, color: '#505068', lineHeight: 1.6 }}>{detail}</div>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+              background: 'transparent', border: '1px solid #1a1a2e',
+              color: '#505068', fontSize: 13, fontFamily: 'inherit',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              padding: '8px 16px', borderRadius: 8, cursor: 'pointer',
+              background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)',
+              color: '#f87171', fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
 
 /* ── Nav item ──────────────────────────────────────────────────────────────── */
 function NavItem({ icon, label, active, onClick, badge }: {

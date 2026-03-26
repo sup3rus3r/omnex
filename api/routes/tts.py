@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -25,11 +25,30 @@ class SpeakRequest(BaseModel):
 @router.post("/speak")
 async def speak(req: SpeakRequest):
     import asyncio
-    from api.tts import synthesize
-    wav_bytes = await asyncio.get_event_loop().run_in_executor(
-        None, synthesize, req.text, req.voice
+    from api.tts import synthesize_stream
+
+    loop = asyncio.get_event_loop()
+
+    def _gen():
+        return synthesize_stream(req.text, req.voice)
+
+    # Run the generator in a thread so streaming doesn't block the event loop
+    async def _async_gen():
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        gen = await loop.run_in_executor(None, _gen)
+        for chunk in gen:
+            yield chunk
+
+    return StreamingResponse(
+        _async_gen(),
+        media_type="audio/wav",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Transfer-Encoding": "chunked",
+        },
     )
-    return Response(content=wav_bytes, media_type="audio/wav")
 
 
 @router.get("/info")

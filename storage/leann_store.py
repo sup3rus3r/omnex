@@ -106,14 +106,16 @@ def add_vector(
     vector: list[float] | np.ndarray,
     metadata: dict | None = None,
 ) -> str:
+    _get_index(index_name)  # ensure loaded before acquiring lock
     with _get_lock(index_name):
-        idx, payload, counter = _get_index(index_name)
-        key = index_name.value
+        key     = index_name.value
+        idx     = _indexes[key]
+        payload = _payloads[key]
+        counter = _counters[key]
 
         vec = np.array(vector, dtype=np.float32)
         idx.add(counter, vec)
         payload[counter] = {"chunk_id": chunk_id, **(metadata or {})}
-        _payloads[key] = payload
         _counters[key] = counter + 1
 
         _save(index_name)
@@ -151,11 +153,11 @@ def search(
 
 
 def delete_vector(index_name: IndexName, leann_id: str) -> None:
+    _get_index(index_name)  # ensure loaded before acquiring lock
     with _get_lock(index_name):
-        idx, payload, _ = _get_index(index_name)
         key = index_name.value
         iid = int(leann_id)
-        idx.remove(iid)
+        _indexes[key].remove(iid)
         _payloads[key].pop(iid, None)
         _save(index_name)
 
@@ -166,14 +168,18 @@ def delete_vectors(chunk_ids: list[str]) -> int:
     deleted = 0
     for name in IndexName:
         try:
+            # _get_index acquires the lock internally — call it first,
+            # then re-acquire for the mutation to avoid deadlock.
+            _get_index(name)  # ensure loaded
             with _get_lock(name):
-                idx, payload, _ = _get_index(name)
                 key = name.value
+                idx     = _indexes[key]
+                payload = _payloads[key]
                 to_remove = [iid for iid, p in payload.items() if p.get("chunk_id") in id_set]
                 for iid in to_remove:
                     try:
                         idx.remove(iid)
-                        _payloads[key].pop(iid, None)
+                        payload.pop(iid, None)
                         deleted += 1
                     except Exception:
                         pass

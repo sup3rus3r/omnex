@@ -19,8 +19,10 @@ from api.routes import query, chunks, ingest, identity, setup, mcp, tts, timelin
 async def lifespan(app: FastAPI):
     from storage.mongo import get_db
     from api.tunnel import start_tunnel
+    from api.routes.ingest import restore_watches
     get_db()
     start_tunnel(port=8000)
+    restore_watches()
     yield
 
 

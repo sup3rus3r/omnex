@@ -63,6 +63,26 @@ TEMPORAL_PATTERNS = [
 LOCATION_KEYWORDS = {"in", "at", "from", "near", "around"}
 CODE_KEYWORDS = {"code", "function", "class", "script", "module", "implementation", "def", "import"}
 
+# Device name patterns — extracted from queries like "photos from my iPhone"
+_DEVICE_PATTERNS = re.compile(
+    r'\b(iphone|ipad|samsung|galaxy|pixel|huawei|sony|canon|nikon|fuji(?:film)?|gopro|oneplus|xiaomi|android)\b',
+    re.IGNORECASE,
+)
+
+# File-type hint patterns — "my PDFs", "spreadsheets", "MP3s"
+_EXT_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\bpdf[s]?\b', re.I),             "document"),
+    (re.compile(r'\bspreadsheet[s]?\b', re.I),      "document"),
+    (re.compile(r'\bword\s+doc[s]?\b', re.I),       "document"),
+    (re.compile(r'\bpresentation[s]?\b', re.I),     "document"),
+    (re.compile(r'\bmp3[s]?\b', re.I),              "audio"),
+    (re.compile(r'\bpodcast[s]?\b', re.I),          "audio"),
+    (re.compile(r'\bvideo[s]?\b|\bclip[s]?\b', re.I), "video"),
+    (re.compile(r'\bphoto[s]?\b|\bpicture[s]?\b|\bimage[s]?\b', re.I), "image"),
+    (re.compile(r'\bscreenshot[s]?\b', re.I),       "image"),
+    (re.compile(r'\bcode\b|\bscript[s]?\b', re.I), "code"),
+]
+
 
 _CONVERSATIONAL = {
     "hi", "hello", "hey", "sup", "yo", "howdy",
@@ -97,12 +117,25 @@ def detect_intent(query: str) -> dict:
     # Person detection — "photos with Sarah", "show me pictures of Dad"
     person_name = _extract_person_name(q)
 
+    # Device name — "photos from my iPhone", "Samsung pictures"
+    device_match = _DEVICE_PATTERNS.search(query)
+    device_hint = device_match.group(1).lower() if device_match else None
+
+    # File type override from natural language — "my PDFs", "MP3s"
+    file_type_hint = None
+    for pattern, ft in _EXT_PATTERNS:
+        if pattern.search(query):
+            file_type_hint = ft
+            break
+
     return {
-        "visual":      is_visual,
-        "temporal":    is_temporal,
-        "code":        is_code,
-        "location":    is_location,
-        "person_name": person_name,
+        "visual":          is_visual,
+        "temporal":        is_temporal,
+        "code":            is_code,
+        "location":        is_location,
+        "person_name":     person_name,
+        "device_hint":     device_hint,
+        "file_type_hint":  file_type_hint,
     }
 
 
@@ -161,6 +194,11 @@ async def search(
 
     intent = detect_intent(query)
     tag_filters = extract_tag_filters(query)  # e.g. ["year-2023", "topic-travel"]
+
+    # Intent-derived overrides — only if not already set by caller
+    if not file_type_filter and intent.get("file_type_hint"):
+        file_type_filter = intent["file_type_hint"]
+
     raw_results: list[dict] = []
 
     # Person-based search — resolve name to cluster, filter image chunks
@@ -214,7 +252,7 @@ async def search(
     seen_chunk_ids: set[str] = set()
 
     # Minimum relevance threshold — drop low-confidence hits
-    SCORE_THRESHOLD = 0.25
+    SCORE_THRESHOLD = 0.15
 
     for hit in sorted(raw_results, key=lambda x: x["score"], reverse=True):
         if hit.get("score", 0) < SCORE_THRESHOLD:
@@ -222,7 +260,6 @@ async def search(
         chunk_id = hit.get("chunk_id")
         if not chunk_id or chunk_id in seen_chunk_ids:
             continue
-        # If person filter active, only include chunks featuring that person
         if person_chunk_ids is not None and chunk_id not in person_chunk_ids:
             continue
         seen_chunk_ids.add(chunk_id)
@@ -231,11 +268,9 @@ async def search(
         if not doc:
             continue
 
-        # Apply filters
         if file_type_filter and doc.get("file_type") != file_type_filter:
             continue
 
-        # Tag-based AND-filter — all extracted tags must be present on the chunk
         if tag_filters:
             chunk_tags = set(doc.get("tags", []))
             if not all(t in chunk_tags for t in tag_filters):
@@ -250,13 +285,13 @@ async def search(
                 if date_to and doc_date > date_to:
                     continue
 
-        chunk_id_str = str(doc["_id"])
-        thumbnail_url = (
-            f"/chunk/{chunk_id_str}/thumbnail"
-            if doc.get("file_type") == "image"
-            else None
-        )
+        # Device filter — "photos from iPhone" → metadata.device contains "iphone"
+        if intent.get("device_hint"):
+            device = (meta.get("device") or "").lower()
+            if intent["device_hint"] not in device:
+                continue
 
+        chunk_id_str = str(doc["_id"])
         results.append(QueryResult(
             chunk_id=chunk_id_str,
             score=hit["score"],
@@ -264,11 +299,26 @@ async def search(
             source_path=doc.get("source_path", ""),
             text=doc.get("text_content"),
             metadata=meta,
-            thumbnail_url=thumbnail_url,
+            thumbnail_url=f"/chunk/{chunk_id_str}/thumbnail" if doc.get("file_type") == "image" else None,
         ))
 
         if len(results) >= top_k:
             break
+
+    # ── Broad MongoDB fallback ─────────────────────────────────────────────────
+    # When vector search returns nothing (sparse index, broad queries like
+    # "what did I work on recently?"), fall back to a MongoDB query so the
+    # LLM always has something real to reason about.
+    if not results:
+        results = await _mongo_fallback(
+            query=query,
+            intent=intent,
+            file_type_filter=file_type_filter,
+            date_from=date_from,
+            date_to=date_to,
+            top_k=top_k,
+            device_hint=intent.get("device_hint"),
+        )
 
     # LLM filter + response — LLM sees all candidates, returns only relevant ones + answer
     llm_response = None
@@ -289,6 +339,122 @@ async def search(
         suggested_refinements=refinements,
         session_id=session_id,
     )
+
+
+# ── MongoDB broad fallback ────────────────────────────────────────────────────
+
+async def _mongo_fallback(
+    query: str,
+    intent: dict,
+    file_type_filter: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    top_k: int,
+    device_hint: str | None = None,
+) -> list[QueryResult]:
+    """
+    Broad MongoDB fallback when vector search finds nothing.
+    Handles temporal queries ("recently", "last week"), broad browsing,
+    device queries ("photos from iPhone"), and keyword text search.
+    """
+    from storage.mongo import get_db
+    import re
+
+    db = get_db()
+    q: dict = {"chunk_index": 0}  # one representative chunk per source file
+
+    if file_type_filter:
+        q["file_type"] = file_type_filter
+
+    # Device filter — match metadata.device case-insensitively
+    if device_hint:
+        q["metadata.device"] = {"$regex": device_hint, "$options": "i"}
+
+    # Resolve relative temporal expressions → date range
+    now = datetime.now(timezone.utc)
+    ql  = query.lower()
+
+    if not date_from and not date_to:
+        if re.search(r"\b(today)\b", ql):
+            from datetime import timedelta
+            date_from = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif re.search(r"\b(yesterday)\b", ql):
+            from datetime import timedelta
+            date_from = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            date_to   = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif re.search(r"\b(this week|last week|recently|lately)\b", ql):
+            from datetime import timedelta
+            date_from = now - timedelta(days=7)
+        elif re.search(r"\b(this month|last month)\b", ql):
+            from datetime import timedelta
+            date_from = now - timedelta(days=30)
+        elif re.search(r"\b(this year|last year)\b", ql):
+            from datetime import timedelta
+            date_from = now - timedelta(days=365)
+        elif re.search(r"\b(\d+)\s+days?\s+ago\b", ql):
+            m = re.search(r"\b(\d+)\s+days?\s+ago\b", ql)
+            from datetime import timedelta
+            date_from = now - timedelta(days=int(m.group(1)))
+        elif re.search(r"\b(\d+)\s+weeks?\s+ago\b", ql):
+            m = re.search(r"\b(\d+)\s+weeks?\s+ago\b", ql)
+            from datetime import timedelta
+            date_from = now - timedelta(weeks=int(m.group(1)))
+
+    if date_from:
+        q.setdefault("created_at", {})["$gte"] = date_from
+    if date_to:
+        q.setdefault("created_at", {})["$lte"] = date_to
+
+    # Tag-based filters from query — year, month, topic, scene, location, season
+    from embeddings.tagger import extract_tag_filters
+    tag_filters = extract_tag_filters(query)
+    # Only apply tags that are specific (year, month, topic, scene) — skip type tags
+    # since file_type_filter already handles those
+    specific_tags = [t for t in tag_filters if not t.startswith("type-")]
+    if specific_tags:
+        q["tags"] = {"$all": specific_tags}
+
+    # Keyword text search — strip common question words, use content words
+    stop = {"what", "did", "i", "do", "work", "on", "the", "a", "an", "my", "me",
+            "show", "find", "list", "get", "have", "has", "is", "are", "was",
+            "recently", "lately", "today", "yesterday", "last", "this", "week",
+            "month", "year", "any", "all", "some", "about", "tell", "give",
+            "photos", "pictures", "images", "files", "documents", "videos",
+            "audio", "from", "with", "that", "those", "these", "for", "and",
+            "january", "february", "march", "april", "may", "june", "july",
+            "august", "september", "october", "november", "december",
+            "iphone", "samsung", "pixel", "android", "canon", "nikon"}
+    keywords = [w for w in re.findall(r"[a-z]+", ql) if len(w) > 2 and w not in stop]
+    if keywords:
+        # MongoDB text search if index exists, otherwise regex
+        try:
+            q["$text"] = {"$search": " ".join(keywords)}
+            docs = list(db["chunks"].find(q, {"score": {"$meta": "textScore"}})
+                        .sort([("score", {"$meta": "textScore"})])
+                        .limit(top_k))
+        except Exception:
+            # Fallback: regex on text_content for the strongest keyword
+            q.pop("$text", None)
+            q["text_content"] = {"$regex": keywords[0], "$options": "i"}
+            docs = list(db["chunks"].find(q).sort("created_at", -1).limit(top_k))
+    else:
+        # No useful keywords — just return most recent items
+        docs = list(db["chunks"].find(q).sort("created_at", -1).limit(top_k))
+
+    results = []
+    for doc in docs:
+        chunk_id_str = str(doc["_id"])
+        meta = doc.get("metadata", {})
+        results.append(QueryResult(
+            chunk_id=chunk_id_str,
+            score=0.0,  # no vector score — fallback result
+            file_type=doc.get("file_type", "unknown"),
+            source_path=doc.get("source_path", ""),
+            text=doc.get("text_content"),
+            metadata=meta,
+            thumbnail_url=f"/chunk/{chunk_id_str}/thumbnail" if doc.get("file_type") == "image" else None,
+        ))
+    return results
 
 
 # ── Person resolution ─────────────────────────────────────────────────────────
@@ -391,25 +557,36 @@ def _build_context(results: list[QueryResult]) -> str:
     parts = []
     for i, r in enumerate(results, 1):
         snippet = (r.text or "")[:400]
-        date = r.metadata.get("created_at") or r.metadata.get("modified_at") or ""
+        meta = r.metadata
+        date = meta.get("exif_datetime") or meta.get("created_at") or meta.get("modified_at") or ""
         date_str = f" | {date}" if date else ""
+        device = meta.get("device", "")
+        device_str = f" | device:{device}" if device else ""
+        gps = meta.get("gps")
+        gps_str = f" | gps:{gps['lat']:.4f},{gps['lng']:.4f}" if gps else ""
+        lang = meta.get("language", "")
+        lang_str = f" | lang:{lang}" if lang else ""
         parts.append(
-            f"[{i}] ID:{r.chunk_id} | {r.file_type.upper()} | {r.source_path}{date_str}\n{snippet}"
+            f"[{i}] ID:{r.chunk_id} | {r.file_type.upper()} | {r.source_path}{date_str}{device_str}{gps_str}{lang_str}\n{snippet}"
         )
     return "\n\n".join(parts)
 
 
 _SYSTEM_PROMPT = (
-    "You are Omnex, a personal AI memory assistant. "
-    "You have access to the user's indexed personal data. "
-    "When candidates are provided, they ARE real items from the user's data — treat them as such. "
-    "Your job: read the candidates, pick only the ones that match the request, and answer naturally. "
+    "You are Omnex, a personal AI memory system. "
+    "You have already searched the user's indexed personal files and data. "
+    "The search results (if any) are provided in each message. "
+    "NEVER say you lack access to the user's data — you have already searched it. "
+    "NEVER ask the user to share files — you already have the search results. "
+    "When candidates are provided, they ARE real items found in the user's data. "
+    "Your job: pick only the ones that match the request, and answer naturally. "
     "ALWAYS begin your reply with exactly this line (no exceptions):\n"
     "RELEVANT_IDS: [\"id1\", \"id2\"]\n"
     "Use the actual ID values from the candidates (the ID: field). "
     "Then write a concise natural response about what you found. "
-    "If none match: RELEVANT_IDS: [] then explain what you found instead. "
-    "Do not use markdown formatting. Do not use bullet points or bold text. Write in plain sentences."
+    "If none match: RELEVANT_IDS: [] then explain what was searched and found. "
+    "When no results were found: say you searched and found nothing, suggest reindexing or different keywords. "
+    "Do not use markdown. Do not use bullet points or bold. Write in plain sentences."
 )
 
 
@@ -449,7 +626,12 @@ def _build_messages(query: str, context: str, history: list[dict]) -> list[dict]
             f"Start your reply with RELEVANT_IDS: [...] using the ID values shown, then respond naturally."
         )
     else:
-        user_content += "\n\nNo items were found in the index. Respond conversationally."
+        user_content += (
+            "\n\nNo items were retrieved from the index for this query. "
+            "Tell the user you searched their data but found nothing matching their request. "
+            "Do not say you lack access to their data — you have already searched and found no matches. "
+            "Suggest they may not have indexed that type of content yet, or try different wording."
+        )
     messages.append({"role": "user", "content": user_content})
 
     return messages

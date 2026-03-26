@@ -1,8 +1,11 @@
 """
 Omnex — Ingestion Routes
-POST /ingest/trigger  — Trigger ingestion for a server-side path
-POST /ingest/upload   — Upload files directly from the browser, then ingest
-GET  /ingest/status   — Current ingestion progress
+POST /ingest/trigger      — Trigger ingestion for a server-side path
+POST /ingest/upload       — Upload files directly from the browser, then ingest
+GET  /ingest/status       — Current ingestion progress
+POST /ingest/watch        — Start watching a folder for auto-ingestion
+DELETE /ingest/watch      — Stop watching a folder
+GET  /ingest/watches      — List all active watched folders
 """
 
 from __future__ import annotations
@@ -24,6 +27,10 @@ router = APIRouter()
 # Track active ingestion so it can be cancelled
 _active_cancel = threading.Event()
 _active_path: str | None = None
+
+# Active watcher handles — path → WatcherHandle
+_watchers: dict[str, object] = {}
+_watchers_lock = threading.Lock()
 
 
 class IngestRequest(BaseModel):
@@ -227,6 +234,97 @@ async def cancel_ingest():
         return {"status": "no_active_ingestion"}
     _active_cancel.set()
     return {"status": "cancel_requested", "path": _active_path}
+
+
+class WatchRequest(BaseModel):
+    path:    str
+    workers: int = 2
+
+
+@router.post("/watch", dependencies=[Depends(require_api_key)])
+async def start_watch(req: WatchRequest):
+    """Start watching a folder for new/modified/deleted files and auto-ingest them."""
+    from ingestion.watcher import start_watcher
+    from storage.mongo import get_db
+
+    source = Path(req.path)
+    if not source.is_dir():
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {req.path}")
+
+    with _watchers_lock:
+        if req.path in _watchers:
+            return {"status": "already_watching", "path": req.path}
+
+        handle = start_watcher(source, workers=req.workers)
+        _watchers[req.path] = handle
+
+    # Persist to MongoDB so it survives restart
+    db = get_db()
+    db["watched_folders"].update_one(
+        {"path": req.path},
+        {"$set": {"path": req.path, "workers": req.workers, "active": True}},
+        upsert=True,
+    )
+
+    return {"status": "watching", "path": req.path, "workers": req.workers}
+
+
+@router.delete("/watch", dependencies=[Depends(require_api_key)])
+async def stop_watch(path: str):
+    """Stop watching a folder."""
+    from storage.mongo import get_db
+
+    with _watchers_lock:
+        handle = _watchers.pop(path, None)
+
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Not currently watching that path")
+
+    handle.stop()
+
+    db = get_db()
+    db["watched_folders"].update_one({"path": path}, {"$set": {"active": False}})
+
+    return {"status": "stopped", "path": path}
+
+
+@router.get("/watches")
+async def list_watches():
+    """Return all currently watched folders."""
+    from storage.mongo import get_db
+    db = get_db()
+    records = list(db["watched_folders"].find({"active": True}, {"_id": 0}))
+    # Annotate with live status from in-memory handles
+    with _watchers_lock:
+        active_paths = set(_watchers.keys())
+    for r in records:
+        r["alive"] = r["path"] in active_paths
+    return {"watches": records}
+
+
+def restore_watches() -> None:
+    """Called on API startup — re-start any watchers that were active before shutdown."""
+    import logging
+    from ingestion.watcher import start_watcher
+    from storage.mongo import get_db
+
+    log = logging.getLogger("omnex.watcher")
+    try:
+        db = get_db()
+        for record in db["watched_folders"].find({"active": True}):
+            path = record["path"]
+            workers = record.get("workers", 2)
+            source = Path(path)
+            if not source.is_dir():
+                log.warning(f"[watcher] watched path no longer exists: {path}")
+                continue
+            with _watchers_lock:
+                if path not in _watchers:
+                    handle = start_watcher(source, workers=workers)
+                    _watchers[path] = handle
+                    log.info(f"[watcher] restored watch on {path}")
+    except Exception as e:
+        log.error(f"[watcher] failed to restore watches: {e}")
 
 
 def _run_ingestion(path: str, workers: int) -> None:

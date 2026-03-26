@@ -37,6 +37,7 @@ Index everything you have — documents, photos, video, audio, code — and reca
 - [Tech Stack](#tech-stack)
 - [Vision](#vision)
 - [Current Status](#current-status)
+- [Roadmap & Future Integrations](#roadmap--future-integrations)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -52,6 +53,8 @@ The way humans store and retrieve personal data has not fundamentally changed si
 > *"Show me photos with my sister from the Cape Town trip."*
 > *"Pull up the code I wrote for authentication last year."*
 > *"What was I working on the week before the product launch?"*
+> *"Photos from my iPhone taken last summer."*
+> *"Documents from March 2023 about the project handover."*
 
 These are not search queries. They are memories. Omnex retrieves them.
 
@@ -66,11 +69,11 @@ These are not search queries. They are memories. Omnex retrieves them.
 
 ### Semantic Text & Document Indexing
 
-Documents, PDFs, Markdown, Word, Excel, PowerPoint, HTML, and plain text are chunked, embedded with MiniLM (384-dim), and stored in the LEANN vector index. Query by meaning, not keyword.
+Documents, PDFs, Markdown, Word, Excel, PowerPoint, HTML, and plain text are chunked, embedded with MiniLM (384-dim), and stored in the vector index. Query by meaning, not keyword.
 
 ### Image Understanding
 
-Images are embedded with CLIP (ViT-B/32). EXIF metadata, timestamps, and GPS coordinates are extracted and indexed alongside the visual embedding. Thumbnails are generated for every image.
+Images are embedded with CLIP (ViT-B/32). EXIF metadata, timestamps, GPS coordinates, and device information are extracted and indexed alongside the visual embedding. Thumbnails are generated for every image.
 
 ### Audio & Video Transcription
 
@@ -82,7 +85,7 @@ Video keyframes are extracted and embedded with CLIP, giving Omnex visual unders
 
 ### Code Understanding
 
-Source code is indexed with CodeBERT embeddings (512-dim). Functions, classes, and symbol metadata are extracted and stored — enabling semantic code search across your entire codebase.
+Source code is indexed with CodeBERT embeddings (768-dim). Functions, classes, and symbol metadata are extracted and stored — enabling semantic code search across your entire codebase.
 
 ### Face Detection & Identity Clustering
 
@@ -90,15 +93,19 @@ Faces in photos and video are detected with InsightFace (ArcFace, 512-dim embedd
 
 ### Neural Auto-Tagger
 
-Every chunk is automatically tagged during ingestion using the embedding model — no manual labelling required. Tags are used as metadata filters at query time.
-
-### File Watcher — Incremental Indexing
-
-Drop new files into a watched folder and they are indexed automatically. No manual re-runs. Changes and deletions are handled incrementally.
+Every chunk is automatically tagged during ingestion: `year-*`, `month-*`, `season-*`, `topic-*`, `scene-*`, `location-gps`, `lang-*`, `format-*`, `temporal-*`, `size-*`. Images and video are tagged using CLIP zero-shot scoring against 15 scene categories. Documents and audio use keyword matching. No manual labelling required.
 
 ### Natural Language Query Engine
 
-Queries are parsed into multi-stage vector searches across all indexes (text, image, audio, video, code), filtered by metadata (date, file type, tags, identity), and passed to an LLM that acts as an intelligent filter — deciding which results actually match the request before responding. Only genuinely relevant results are returned.
+Queries are parsed into multi-stage vector searches across all indexes (text, image, audio, video, code), then filtered by metadata — date ranges, file type, device name, GPS region, language, and tags. A MongoDB fallback handles broad and temporal queries ("what did I work on recently?") so the LLM always gets real data to reason about. An LLM then acts as an intelligent post-filter, selecting only the genuinely relevant results before responding.
+
+### Temporal & Metadata Queries
+
+The query engine extracts structured signals from natural language: device names ("iPhone", "Canon", "Pixel"), date ranges ("last week", "March 2023", "3 months ago"), file type hints ("my PDFs", "spreadsheets", "MP3s"), topic tags, and GPS region filters. These are applied as MongoDB match conditions alongside the vector search.
+
+### File Watcher — Incremental Indexing
+
+Point Omnex at a folder and it watches it continuously using `watchdog`. New files are indexed automatically as they appear. Modified files are re-indexed. Deleted or moved files are removed from the index. A 3-second debounce prevents re-indexing files that are still being written. Watched folders persist across restarts — they are stored in MongoDB and re-started automatically when the API comes back up. Manage watched folders directly from the Ingest panel — add a path, see live status (green dot = active), and stop watching with one click.
 
 ### Conversational Memory
 
@@ -114,7 +121,7 @@ Every session persists in MongoDB. The last 10 conversation turns are passed as 
 
 ### Voice Input & TTS Output
 
-Voice input uses local Whisper running on-device — press to speak or hold for always-listening Jarvis mode with automatic voice activity detection. Voice output uses high-quality local TTS — Qwen3-TTS on GPU (NVIDIA, 2GB+ VRAM), Kokoro ONNX on CPU. The TTS button is a pulsing brain orb that animates when speaking. The mic button shows a live waveform visualiser during recording. No cloud voice dependency of any kind.
+Voice input uses local Whisper running on-device — press to speak or hold for always-listening Jarvis mode with automatic voice activity detection. Voice output uses VibeVoice-Realtime-0.5B (Microsoft, ~300ms first token, 6 voices, 24kHz streaming) on GPU, with Kokoro ONNX as CPU fallback. Voice can be selected in the Settings panel. The TTS button is a pulsing brain orb that animates when speaking. The mic button shows a live waveform visualiser during recording. No cloud voice dependency of any kind.
 
 ### Remote Access & Agent API
 
@@ -130,7 +137,11 @@ Faces in photos are detected, clustered, and displayed in a dedicated People vie
 
 ### Timeline View
 
-Browse your entire indexed history by year, month, and file type. Paginated grid view with type filters — a visual map of everything Omnex knows about, organised by when it happened.
+Browse your entire indexed history by year and month. One card per source file — showing file type, date, and chunk count. Filter by type. Delete directly from the timeline. A paginated visual map of everything Omnex knows about, organised by when it happened.
+
+### Resizable Preview Pane
+
+A persistent preview pane sits beside all views — Recall, Timeline, and beyond. Drag to resize. Previews images, plays audio and video, renders document text, and shows chunk metadata. Available from every view, not just search.
 
 ### Agent Memory Write API
 
@@ -138,7 +149,7 @@ AI agents can store observations directly into the Omnex index. Register an agen
 
 ### Delete & Manage Index
 
-Remove indexed data directly from the UI — delete a single chunk from the preview pane, or bulk-delete an entire source path from the Ingest panel's source manager. Full control over what stays in your memory.
+Remove indexed data directly from the UI — delete a source file from the Ingest panel, the Timeline view, or the Recall results. Full control over what stays in your memory.
 
 ---
 
@@ -280,14 +291,15 @@ Check: `mongosh --eval "db.adminCommand('ping')"`. With Docker, no local MongoDB
 | Text Embeddings | sentence-transformers — MiniLM-L6-v2 (384-dim) |
 | Image / Video Embeddings | CLIP ViT-B/32 (512-dim) |
 | Audio Transcription | OpenAI Whisper (base) |
-| Code Embeddings | CodeBERT (512-dim) |
+| Code Embeddings | CodeBERT (768-dim) |
 | Face Detection | InsightFace — ArcFace buffalo_l (512-dim) |
-| Vector Index | LEANN — file-based, 97% storage savings vs Qdrant |
+| Vector Index | USearch — file-based, i8 quantized (~4x storage savings vs float32) |
 | Metadata Store | MongoDB 7 |
 | Binary Store | Content-addressed chunk store |
 | Frontend | Next.js 14, React 18, TypeScript, Framer Motion |
 | LLM | Anthropic / OpenAI / Ollama (configurable) |
-| TTS | Qwen3-TTS (GPU) / Kokoro ONNX (CPU fallback) |
+| TTS | VibeVoice-Realtime-0.5B (GPU) / Kokoro ONNX (CPU fallback) |
+| Voice Input | OpenAI Whisper (local, on-device) |
 | Remote Access | ngrok tunnel + MCP JSON-RPC 2.0 server |
 | Virtual Filesystem | FUSE / fusepy — read-write virtual drive (Linux/WSL) |
 | Infrastructure | Docker Compose |
@@ -332,8 +344,8 @@ Omnex is the open alternative. Local. Private. Agentic-ready. Built for humans a
 | 5 | Audio + video ingestion | ✅ |
 | 6 | Code ingestion + CodeBERT | ✅ |
 | 7 | Neural auto-tagger | ✅ |
-| 8 | File watcher — incremental indexing | ✅ |
-| 9 | LLM chat layer + session memory + high-quality TTS | ✅ |
+| 8 | File watcher — incremental indexing + UI + persistent across restarts | ✅ |
+| 9 | LLM chat layer + session memory + streaming TTS | ✅ |
 | 10 | Remote access — MCP server + ngrok + API keys + signed URLs | ✅ |
 | 11 | FUSE virtual filesystem — read | ✅ |
 | 12 | FUSE filesystem — write + sync | ✅ |
@@ -341,8 +353,129 @@ Omnex is the open alternative. Local. Private. Agentic-ready. Built for humans a
 | 14 | People view + Timeline view + Delete UI + Settings | ✅ |
 | 15 | Progressive UX — cold start + drive expansion | ✅ |
 | 16 | Multi-agent write API — agents store observations into index | ✅ |
+| 17 | Temporal + metadata query engine — device, GPS, date, tag filters | ✅ |
 
 Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Build plan: [docs/BUILDPLAN.md](docs/BUILDPLAN.md) · Implementation reference: [docs/TECHDOC.md](docs/TECHDOC.md)
+
+---
+
+## Roadmap & Future Integrations
+
+Everything built so far indexes data that lives on your local machine. The next frontier is pulling in the rest of your digital life — the data that currently lives in silos across the internet — and making it all part of the same searchable, queryable memory.
+
+### Cloud Storage
+
+Sync and index files directly from cloud drives without downloading them manually.
+
+| Integration | What gets indexed |
+|---|---|
+| Google Drive | Docs, Sheets, Slides, PDFs, images — full content + metadata |
+| OneDrive / SharePoint | Office documents, files, shared drives |
+| Dropbox | All file types — same pipeline as local ingestion |
+| iCloud Drive | Photos, documents, Notes |
+| Box | Business documents and shared content |
+
+### Email
+
+Your inbox is one of the richest sources of personal memory — conversations, attachments, decisions, relationships. All of it searchable.
+
+| Integration | What gets indexed |
+|---|---|
+| Gmail | Email body, subject, sender, thread, attachments |
+| Outlook / Microsoft 365 | Same — plus calendar events and meeting notes |
+| IMAP / generic | Any email provider via standard IMAP protocol |
+
+### Calendars
+
+Turn your calendar history into queryable context — "what was I doing the week of the product launch?" becomes answerable.
+
+| Integration | What gets indexed |
+|---|---|
+| Google Calendar | Events, attendees, descriptions, recurrence |
+| Outlook Calendar | Same |
+| Apple Calendar | Same |
+
+### Social & Messaging
+
+The conversations you have every day — DMs, group chats, posts — contain a huge amount of personal context that is currently locked away.
+
+| Integration | What gets indexed |
+|---|---|
+| WhatsApp | Messages, media, group conversations |
+| Telegram | Messages, channels, files |
+| Slack | Messages, threads, files, channel history |
+| Discord | Server messages, DMs, shared media |
+| iMessage | Conversations and media |
+| Twitter / X | Tweets, bookmarks, DMs |
+| LinkedIn | Posts, messages, saved articles |
+| Instagram | Captions, DMs, saved posts |
+
+### Productivity & Notes
+
+Everything you capture during work — notes, tasks, wikis, bookmarks — indexed as a unified knowledge base.
+
+| Integration | What gets indexed |
+|---|---|
+| Notion | Pages, databases, notes, linked content |
+| Obsidian | Vault notes, tags, graph links |
+| Evernote | Notes, notebooks, web clips |
+| Roam Research | Pages, blocks, daily notes |
+| Apple Notes | Notes and attachments |
+| Todoist / Linear / Jira | Tasks, tickets, project history |
+| Browser bookmarks | Page titles, URLs, saved content |
+
+### Development & Code
+
+Your entire software history — repos, issues, reviews, deployments.
+
+| Integration | What gets indexed |
+|---|---|
+| GitHub / GitLab | Repos, commits, issues, PRs, comments |
+| Jira | Tickets, sprints, comments, attachments |
+| Confluence | Wiki pages and documentation |
+| Figma | File names, frames, comments |
+
+### Health & Fitness
+
+Quantified self data — activity, sleep, vitals — all queryable alongside everything else.
+
+| Integration | What gets indexed |
+|---|---|
+| Apple Health | Steps, sleep, heart rate, workouts |
+| Google Fit | Activity and health metrics |
+| Strava | Runs, rides, activities, routes |
+| Oura / Whoop | Sleep stages, recovery scores, HRV |
+| Fitbit | Activity, sleep, nutrition logs |
+
+### Financial
+
+Receipts, transactions, and financial documents — query your spending history in natural language.
+
+| Integration | What gets indexed |
+|---|---|
+| Bank statements (PDF/CSV) | Transactions, merchants, amounts, dates |
+| Receipts | OCR extraction of items, amounts, stores |
+| Crypto wallets | Transaction history |
+
+### Reading & Media
+
+The content you consume — articles, books, podcasts, videos — made searchable and recallable.
+
+| Integration | What gets indexed |
+|---|---|
+| Kindle / Apple Books | Highlights, annotations, reading history |
+| Pocket / Instapaper | Saved articles, highlights |
+| Spotify | Listening history, playlists, podcast episodes |
+| YouTube watch history | Video titles, descriptions, transcripts (via captions) |
+| Readwise | All highlights and reader notes |
+
+---
+
+### The Architecture for Integrations
+
+Each integration will follow the same pattern as local ingestion — a connector pulls content, normalises it into the standard chunk schema, runs it through the existing embedding pipeline, and stores it in MongoDB + the vector index. The query engine does not change. You query across everything — local files, email, Slack, GitHub — with the same natural language interface.
+
+Connectors will be opt-in, credentials stored locally, OAuth tokens encrypted at rest. No data ever routes through a cloud intermediary. The ingestion happens on your machine.
 
 ---
 

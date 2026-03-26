@@ -1,6 +1,6 @@
 """
 Omnex — Timeline Routes
-GET /timeline           — Paginated chunks grouped by date
+GET /timeline           — Paginated source files grouped by date
 GET /timeline/years     — Available years
 GET /timeline/months    — Available months for a year
 """
@@ -14,11 +14,12 @@ router = APIRouter()
 
 @router.get("/years")
 async def timeline_years():
-    """Return list of years that have indexed data."""
+    """Return list of years that have indexed data (one entry per source file)."""
     from storage.mongo import get_db
     db = get_db()
     pipeline = [
         {"$match": {"created_at": {"$exists": True}}},
+        {"$group": {"_id": "$source_path", "created_at": {"$min": "$created_at"}}},
         {"$group": {"_id": {"$year": "$created_at"}, "count": {"$sum": 1}}},
         {"$sort": {"_id": -1}},
     ]
@@ -27,7 +28,7 @@ async def timeline_years():
 
 @router.get("/months")
 async def timeline_months(year: int = Query(...)):
-    """Return months with data for a given year."""
+    """Return months with data for a given year (counts distinct source files)."""
     from storage.mongo import get_db
     from datetime import datetime, timezone
     db = get_db()
@@ -36,7 +37,12 @@ async def timeline_months(year: int = Query(...)):
     pipeline = [
         {"$match": {"created_at": {"$gte": start, "$lt": end}}},
         {"$group": {
-            "_id": {"$month": "$created_at"},
+            "_id": "$source_path",
+            "month": {"$first": {"$month": "$created_at"}},
+            "file_type": {"$first": "$file_type"},
+        }},
+        {"$group": {
+            "_id": "$month",
             "count": {"$sum": 1},
             "types": {"$addToSet": "$file_type"},
         }},
@@ -53,40 +59,64 @@ async def timeline(
     limit: int       = Query(default=40, ge=1, le=100),
     file_type: str | None = Query(default=None),
 ):
-    """Return paginated chunks for a given year/month."""
+    """Return paginated source files for a given year/month (one entry per source file)."""
     from storage.mongo import get_db
     from datetime import datetime, timezone
-    from bson import ObjectId
 
     db = get_db()
     start = datetime(year, month, 1, tzinfo=timezone.utc)
     end   = datetime(year, month + 1, 1, tzinfo=timezone.utc) if month < 12 else datetime(year + 1, 1, 1, tzinfo=timezone.utc)
 
-    query: dict = {"created_at": {"$gte": start, "$lt": end}}
+    match: dict = {"created_at": {"$gte": start, "$lt": end}}
     if file_type:
-        query["file_type"] = file_type
+        match["file_type"] = file_type
 
-    total = db["chunks"].count_documents(query)
-    skip  = (page - 1) * limit
+    skip = (page - 1) * limit
 
-    docs = list(db["chunks"].find(
-        query,
-        {"_id": 1, "source_path": 1, "file_type": 1, "created_at": 1,
-         "text_content": 1, "metadata": 1, "chunk_index": 1},
-    ).sort("created_at", -1).skip(skip).limit(limit))
+    # Count distinct source files
+    count_pipeline = [
+        {"$match": match},
+        {"$group": {"_id": "$source_path"}},
+        {"$count": "total"},
+    ]
+    count_result = list(db["chunks"].aggregate(count_pipeline))
+    total = count_result[0]["total"] if count_result else 0
+
+    # Group by source_path — pick the chunk with chunk_index=0 as representative
+    pipeline = [
+        {"$match": match},
+        {"$sort": {"chunk_index": 1}},
+        {"$group": {
+            "_id": "$source_path",
+            "chunk_id":    {"$first": {"$toString": "$_id"}},
+            "file_type":   {"$first": "$file_type"},
+            "created_at":  {"$min": "$created_at"},
+            "chunk_count": {"$sum": 1},
+            "metadata":    {"$first": "$metadata"},
+            "text":        {"$first": "$text_content"},
+        }},
+        {"$sort": {"created_at": -1}},
+        {"$skip": skip},
+        {"$limit": limit},
+    ]
+
+    docs = list(db["chunks"].aggregate(pipeline))
 
     results = []
     for d in docs:
-        chunk_id = str(d["_id"])
+        chunk_id  = d["chunk_id"]
+        ft        = d.get("file_type", "unknown")
+        src       = d["_id"]  # source_path is the group key
         results.append({
-            "chunk_id":    chunk_id,
-            "source_path": d.get("source_path", ""),
-            "file_type":   d.get("file_type", "unknown"),
-            "created_at":  d["created_at"].isoformat() if d.get("created_at") else None,
-            "text":        (d.get("text_content") or "")[:200],
-            "metadata":    d.get("metadata", {}),
-            "chunk_index": d.get("chunk_index", 0),
-            "thumbnail_url": f"/chunk/{chunk_id}/thumbnail" if d.get("file_type") == "image" else None,
+            "chunk_id":      chunk_id,
+            "source_path":   src,
+            "file_type":     ft,
+            "created_at":    d["created_at"].isoformat() if d.get("created_at") else None,
+            "text":          (d.get("text") or "")[:200],
+            "metadata":      d.get("metadata", {}),
+            "chunk_index":   0,
+            "chunk_count":   d.get("chunk_count", 1),
+            "thumbnail_url": f"/chunk/{chunk_id}/thumbnail" if ft == "image" else None,
         })
 
     return {"total": total, "page": page, "limit": limit, "results": results}
