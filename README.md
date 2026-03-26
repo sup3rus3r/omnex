@@ -10,6 +10,7 @@ Index everything you have — documents, photos, video, audio, code — and reca
 [![GitHub Stars](https://img.shields.io/github/stars/sup3rus3r/omnex?style=social)](https://github.com/sup3rus3r/omnex/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/sup3rus3r/omnex?style=social)](https://github.com/sup3rus3r/omnex/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/sup3rus3r/omnex)](https://github.com/sup3rus3r/omnex/issues)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=github-sponsors&logoColor=white)](https://github.com/sponsors/sup3rus3r)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Next.js](https://img.shields.io/badge/Next.js-14-000000?logo=next.js&logoColor=white)](https://nextjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)

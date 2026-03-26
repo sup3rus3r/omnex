@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     unzip \
     ca-certificates \
+    # jemalloc — replaces glibc ptmalloc to prevent heap corruption from
+    # CUDA runtime + multiple native extension allocators conflicting
+    libjemalloc-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ngrok binary via official apt repo (more reliable than CDN zip)
@@ -101,6 +104,9 @@ ENV HF_HOME=/data/models/huggingface
 ENV WHISPER_CACHE=/data/models/whisper
 ENV VIBEVOICE_REPO_PATH=/opt/vibevoice
 ENV VIBEVOICE_MODEL_ID=microsoft/VibeVoice-Realtime-0.5B
+# Use jemalloc instead of glibc ptmalloc to prevent heap corruption
+# from CUDA runtime conflicting with native extension allocators
+ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
 
 EXPOSE 8000
 
