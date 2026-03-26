@@ -37,7 +37,13 @@ def _open_tunnel(token: str, port: int) -> None:
 
     try:
         from pyngrok import ngrok, conf
-        conf.get_default().auth_token = token
+        cfg = conf.get_default()
+        cfg.auth_token = token
+        # Use pre-installed binary if available (avoids SSL download issues in Docker)
+        import shutil
+        system_ngrok = shutil.which("ngrok")
+        if system_ngrok:
+            cfg.ngrok_path = system_ngrok
         tunnel = ngrok.connect(port, "http")
         public_url = tunnel.public_url.replace("http://", "https://")
 

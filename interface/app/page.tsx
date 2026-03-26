@@ -251,18 +251,7 @@ export default function Home() {
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
-            const raw = decoder.decode(value, { stream: true })
-            for (const line of raw.split('\n')) {
-              const trimmed = line.trim()
-              if (!trimmed || trimmed === 'data: [DONE]') continue
-              // SSE format: "data: text"
-              if (trimmed.startsWith('data: ')) {
-                fullText += trimmed.slice(6)
-              } else {
-                // Plain text stream — append directly
-                fullText += line
-              }
-            }
+            fullText += decoder.decode(value, { stream: true })
             setStreamingText(fullText)
           }
         }
@@ -920,6 +909,7 @@ export default function Home() {
 /* ── Remote Access Panel ───────────────────────────────────────────────────── */
 function RemoteAccessPanel({ api }: { api: string }) {
   const [tunnel, setTunnel]     = useState<any>(null)
+  const [fuse,   setFuse]       = useState<any>(null)
   const [copied, setCopied]     = useState<string | null>(null)
   const [, setPolling]          = useState(true)
 
@@ -930,6 +920,7 @@ function RemoteAccessPanel({ api }: { api: string }) {
         const res  = await fetch(`${api}/setup/tunnel`)
         const data = await res.json()
         setTunnel(data)
+        fetch(`${api}/setup/fuse`).then(r => r.json()).then(setFuse).catch(() => {})
         if (data.status === 'active' || data.status === 'error' || data.status === 'disabled') {
           setPolling(false)
           clearInterval(interval)
@@ -1027,6 +1018,30 @@ function RemoteAccessPanel({ api }: { api: string }) {
         <p style={{ fontSize: 12, color: '#505068', marginTop: 4 }}>
           {enabled ? 'All external requests require X-API-Key header.' : 'Set OMNEX_API_KEY env var to require authentication.'}
         </p>
+      </div>
+
+      {/* FUSE virtual filesystem status */}
+      <div style={{ background: 'rgba(10,10,15,0.8)', border: '1px solid #1a1a2e', borderRadius: 12, padding: '16px 24px', marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: fuse?.mounted ? '#34d399' : '#383850', boxShadow: fuse?.mounted ? '0 0 6px #34d399' : 'none' }} />
+          <span style={{ fontSize: 13, color: '#e8e8f0', fontWeight: 500 }}>
+            FUSE Virtual Drive — {fuse == null ? 'Checking…' : fuse.mounted ? 'Mounted' : 'Not mounted'}
+          </span>
+        </div>
+        {fuse && (
+          <>
+            <p style={{ fontSize: 12, color: '#505068', marginTop: 4, marginBottom: 8, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              {fuse.mount_path}
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {fuse.dirs?.map((d: string) => (
+                <span key={d} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: 'rgba(124,106,247,0.08)', border: '1px solid rgba(124,106,247,0.12)', color: '#7c6af7', fontFamily: 'monospace' }}>
+                  /{d}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Connect instructions */}

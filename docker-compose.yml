@@ -62,6 +62,43 @@ services:
     env_file:
       - ./interface/.env.local
 
+  # ── Omnex FUSE filesystem ──────────────────────────────────────────────────
+  fuse:
+    build:
+      context: .
+      dockerfile: fuse/Dockerfile
+    container_name: omnex-fuse
+    restart: unless-stopped
+    networks:
+      - omnex
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # FUSE requires privileged or at minimum SYS_ADMIN + /dev/fuse device
+    privileged: true
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ./fuse:/app/fuse
+      - ./storage:/app/storage
+      # Bind-mount the host directory where Omnex files will appear
+      - type: bind
+        source: ${OMNEX_FUSE_MOUNT:-./omnex-mount}
+        target: /mnt/omnex
+        bind:
+          propagation: shared
+    environment:
+      MONGO_URI: mongodb://host.docker.internal:27017
+      MONGO_DB: omnex
+      OMNEX_DATA_PATH: /data
+      LOG_LEVEL: INFO
+    env_file:
+      - .env
+    depends_on:
+      api:
+        condition: service_healthy
+
   # ── Ollama (optional local LLM) ────────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest

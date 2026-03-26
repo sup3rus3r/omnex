@@ -16,7 +16,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Build tools for packages that need compilation
     build-essential \
     curl \
+    unzip \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install ngrok binary directly (avoids pyngrok SSL download at runtime)
+RUN curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar -xz -C /usr/local/bin \
+    && chmod +x /usr/local/bin/ngrok
 
 WORKDIR /app
 

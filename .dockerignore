@@ -7,7 +7,6 @@ data/
 interface/
 models/ollama/
 docs/
-fuse/
 *.md
 .git
 .gitignore

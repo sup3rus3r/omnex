@@ -326,6 +326,10 @@ async def _ask_llm(
             return await _llm_openai(messages)
         else:
             return await _llm_local(messages)
+    except ModuleNotFoundError as e:
+        import logging
+        logging.getLogger(__name__).warning(f"LLM call skipped (missing package: {e}) — streaming via frontend")
+        return None
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"LLM call failed: {e}")

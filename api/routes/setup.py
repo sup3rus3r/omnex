@@ -102,3 +102,19 @@ async def public_config():
     return {
         "auth_enabled": api_key_enabled(),
     }
+
+
+@router.get("/fuse")
+async def fuse_status():
+    """Return FUSE mount status and path."""
+    import os
+    from pathlib import Path
+    mount = os.getenv("OMNEX_FUSE_MOUNT", "./omnex-mount")
+    mount_path = Path(mount)
+    # Check if mount is active by looking for known subdirs
+    is_mounted = (mount_path / "documents").exists() or (mount_path / "images").exists()
+    return {
+        "mount_path": str(mount_path.resolve()),
+        "mounted":    is_mounted,
+        "dirs":       ["documents", "images", "audio", "video", "code", "by_date", "search"],
+    }
