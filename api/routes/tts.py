@@ -32,12 +32,26 @@ async def speak(req: SpeakRequest):
     def _gen():
         return synthesize_stream(req.text, req.voice)
 
-    # Run the generator in a thread so streaming doesn't block the event loop
+    # Run each chunk fetch in the executor so the event loop is never blocked
     async def _async_gen():
-        import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        gen = await loop.run_in_executor(None, _gen)
-        for chunk in gen:
+        import asyncio, queue, threading
+
+        q: queue.Queue = queue.Queue()
+        _DONE = object()
+
+        def _produce():
+            try:
+                for chunk in synthesize_stream(req.text, req.voice):
+                    q.put(chunk)
+            finally:
+                q.put(_DONE)
+
+        threading.Thread(target=_produce, daemon=True).start()
+
+        while True:
+            chunk = await loop.run_in_executor(None, q.get)
+            if chunk is _DONE:
+                break
             yield chunk
 
     return StreamingResponse(

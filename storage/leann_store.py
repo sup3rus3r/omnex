@@ -79,10 +79,22 @@ def _get_index(name: IndexName) -> tuple[Index, dict[int, dict], int]:
                 pp  = _payload_file(name)
 
                 if ip.exists():
-                    idx.load(str(ip))
-                    payload = json.loads(pp.read_text()) if pp.exists() else {}
-                    payload = {int(k): v for k, v in payload.items()}
-                    counter = max(payload.keys(), default=-1) + 1
+                    try:
+                        idx.load(str(ip))
+                        payload = json.loads(pp.read_text()) if pp.exists() else {}
+                        payload = {int(k): v for k, v in payload.items()}
+                        counter = max(payload.keys(), default=-1) + 1
+                    except Exception:
+                        import logging
+                        logging.getLogger("omnex.leann").warning(
+                            f"Corrupt index file {ip} — deleting and starting fresh"
+                        )
+                        ip.unlink(missing_ok=True)
+                        if pp.exists():
+                            pp.unlink(missing_ok=True)
+                        idx = Index(ndim=dim, metric="cos", dtype="i8")
+                        payload = {}
+                        counter = 0
                 else:
                     payload = {}
                     counter = 0

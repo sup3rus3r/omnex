@@ -340,6 +340,11 @@ def ingest_file(path: Path) -> dict:
 def run(source_path: Path, workers: int = 4, cancel_event=None) -> None:
     logger.info(f"Omnex ingestion starting — source: {source_path}")
 
+    # Pre-warm the embedding model before the thread pool starts.
+    # Lazy loading inside multiple threads causes OMP thread contention → SIGSEGV.
+    from embeddings.text import _get_model as _warm_text
+    _warm_text()
+
     files = collect_files(source_path)
     total = len(files)
 

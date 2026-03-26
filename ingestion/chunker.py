@@ -19,8 +19,8 @@ from ingestion.detector import FileType
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-TEXT_CHUNK_SIZE    = 512   # tokens (approximate — we use chars * 0.75)
-TEXT_CHUNK_OVERLAP = 64
+TEXT_CHUNK_SIZE    = 1024  # tokens (approximate — we use chars * 0.75)
+TEXT_CHUNK_OVERLAP = 128
 CHARS_PER_TOKEN    = 4     # rough approximation
 
 

@@ -22,6 +22,71 @@ router = APIRouter()
 
 _TOOLS = [
     {
+        "name": "omnex_ingest",
+        "description": (
+            "Ingest a file or folder into the Omnex index so it can be searched. "
+            "Pass a server-side path. Returns immediately — poll omnex_ingest_status for progress."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute server-side path to a file or folder to ingest",
+                },
+                "workers": {
+                    "type": "integer",
+                    "description": "Parallel ingestion workers (default 4)",
+                    "default": 4,
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "omnex_ingest_status",
+        "description": "Check the status of an ingestion job. Pass the same path used in omnex_ingest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to check ingestion status for. Omit to get all active jobs.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "omnex_delete_source",
+        "description": "Remove all indexed data for a given source path from the Omnex index.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_path": {
+                    "type": "string",
+                    "description": "The source path to delete all indexed chunks for",
+                },
+            },
+            "required": ["source_path"],
+        },
+    },
+    {
+        "name": "omnex_list_indexed",
+        "description": "List all source paths that have been indexed, with chunk counts and status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_type": {
+                    "type": "string",
+                    "description": "Filter by file type: document, image, video, audio, code",
+                    "enum": ["document", "image", "video", "audio", "code"],
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "omnex_remember",
         "description": (
             "Store a text observation or memory directly into the Omnex index. "
@@ -128,6 +193,18 @@ async def _handle_tool_call(req: MCPRequest, request: Request) -> dict:
     tool_name = params.get("name")
     arguments = params.get("arguments", {})
 
+    if tool_name == "omnex_ingest":
+        return await _tool_ingest(req.id, arguments)
+
+    if tool_name == "omnex_ingest_status":
+        return await _tool_ingest_status(req.id, arguments)
+
+    if tool_name == "omnex_delete_source":
+        return await _tool_delete_source(req.id, arguments)
+
+    if tool_name == "omnex_list_indexed":
+        return await _tool_list_indexed(req.id, arguments)
+
     if tool_name == "omnex_remember":
         agent_id = request.headers.get("X-Agent-ID", "")
         return await _tool_remember(req.id, arguments, agent_id)
@@ -139,6 +216,89 @@ async def _handle_tool_call(req: MCPRequest, request: Request) -> dict:
         return await _tool_stats(req.id)
 
     return _error(req.id, -32602, f"Unknown tool: {tool_name}")
+
+
+async def _tool_ingest(req_id: Any, args: dict) -> dict:
+    from api.routes.ingest import _run_ingestion
+    import threading, os
+    path    = args.get("path", "").strip()
+    workers = int(args.get("workers", 4))
+    if not path:
+        return _error(req_id, -32602, "path is required")
+    if not os.path.exists(path):
+        return _error(req_id, -32602, f"Path does not exist: {path}")
+    threading.Thread(target=_run_ingestion, args=(path, workers), daemon=True).start()
+    return _ok(req_id, {
+        "content": [{"type": "text", "text": f"Ingestion started for: {path}\nPoll omnex_ingest_status to track progress."}],
+        "isError": False,
+    })
+
+
+async def _tool_ingest_status(req_id: Any, args: dict) -> dict:
+    from storage.mongo import get_db
+    db   = get_db()
+    path = args.get("path")
+    query = {"source_path": path} if path else {}
+    records = list(db["ingestion_state"].find(query, {"_id": 0}))
+    for r in records:
+        for k, v in r.items():
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    if not records:
+        text = f"No ingestion record found for: {path}" if path else "No ingestion records found."
+    else:
+        lines = []
+        for r in records:
+            lines.append(
+                f"{r.get('source_path')} — {r.get('status')} "
+                f"({r.get('processed', 0)}/{r.get('total_files', 0)} files, "
+                f"{r.get('errors', 0)} errors)"
+            )
+        text = "\n".join(lines)
+    return _ok(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
+
+
+async def _tool_delete_source(req_id: Any, args: dict) -> dict:
+    from storage.mongo import get_db
+    from storage.leann_store import delete_vectors
+    db          = get_db()
+    source_path = args.get("source_path", "").strip()
+    if not source_path:
+        return _error(req_id, -32602, "source_path is required")
+    docs = list(db["chunks"].find({"source_path": source_path}, {"_id": 1}))
+    if not docs:
+        return _error(req_id, -32602, f"No indexed data found for: {source_path}")
+    chunk_ids = [str(d["_id"]) for d in docs]
+    try:
+        delete_vectors(chunk_ids)
+    except Exception:
+        pass
+    db["chunks"].delete_many({"source_path": source_path})
+    db["ingestion_state"].delete_one({"source_path": source_path})
+    return _ok(req_id, {
+        "content": [{"type": "text", "text": f"Deleted {len(chunk_ids)} chunks for: {source_path}"}],
+        "isError": False,
+    })
+
+
+async def _tool_list_indexed(req_id: Any, args: dict) -> dict:
+    from storage.mongo import get_db
+    db        = get_db()
+    file_type = args.get("file_type")
+    match     = {"file_type": file_type} if file_type else {}
+    pipeline  = [
+        {"$match": match},
+        {"$group": {"_id": "$source_path", "chunks": {"$sum": 1}, "file_type": {"$first": "$file_type"}}},
+        {"$sort": {"chunks": -1}},
+        {"$limit": 50},
+    ]
+    rows  = list(db["chunks"].aggregate(pipeline))
+    if not rows:
+        text = "No indexed sources found."
+    else:
+        lines = [f"{r['file_type'].upper():10} {r['chunks']:>5} chunks — {r['_id']}" for r in rows]
+        text  = f"{len(rows)} indexed sources:\n" + "\n".join(lines)
+    return _ok(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
 
 
 async def _tool_remember(req_id: Any, args: dict, agent_id: str) -> dict:

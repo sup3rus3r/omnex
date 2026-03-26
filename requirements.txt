@@ -45,6 +45,8 @@ huggingface-hub>=0.23.0       # Model downloads
 httpx>=0.27.0                 # Async HTTP client (Ollama calls)
 anthropic>=0.40.0             # Anthropic Claude API client
 openai>=1.40.0                # OpenAI API client
+langgraph>=0.2.0              # Agent graph orchestration
+langchain-core>=0.3.0         # LangChain base (required by langgraph)
 python-multipart>=0.0.9       # File upload support
 aiofiles>=23.2.0              # Async file I/O
 

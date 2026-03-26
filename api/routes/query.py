@@ -97,9 +97,9 @@ async def query(req: QueryRequest):
             history=history,
         )
 
-        # Persist this turn
-        upsert_session_turn(session_id, "user", req.query)
+        # Persist all turns that produced an LLM response (search or chat)
         if response.llm_response:
+            upsert_session_turn(session_id, "user", req.query)
             upsert_session_turn(session_id, "assistant", response.llm_response)
 
         out = _to_response_out(response)

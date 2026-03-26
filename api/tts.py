@@ -71,7 +71,7 @@ from vibevoice.modular.streamer import AudioStreamer
 # ── Voice preset loader ───────────────────────────────────────────────────────
 
 def _load_voice_presets():
-    """Scan voices dir and build name → path map (case-insensitive partial match)."""
+    # Scan voices dir and build name->path map (case-insensitive partial match)
     import glob
     presets = {}
     if os.path.isdir(voices_dir):
@@ -83,7 +83,7 @@ def _load_voice_presets():
 _voice_presets = _load_voice_presets()
 
 def _resolve_voice(name: str) -> str:
-    """Return the .pt file path for the given voice name."""
+    # Return the .pt file path for the given voice name
     key = name.lower()
     # exact match
     if key in _voice_presets:
@@ -104,11 +104,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 try:
     processor = VibeVoiceStreamingProcessor.from_pretrained(model_id)
     if device == "cuda":
+        try:
+            import flash_attn  # noqa: F401
+            _attn = "flash_attention_2"
+        except ImportError:
+            _attn = "sdpa"
         model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
             model_id,
             torch_dtype=torch.bfloat16,
             device_map="cuda",
-            attn_implementation="flash_attention_2",
+            attn_implementation=_attn,
         )
     else:
         model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
@@ -135,6 +140,40 @@ sys.stdout.buffer.flush()
 if not _model_ok:
     sys.exit(1)
 
+# ── GPU warmup — run one silent inference so first real request is fast ────────
+try:
+    _warmup_voice = next(iter(_voice_presets.values()), None)
+    if _warmup_voice:
+        _wp = torch.load(_warmup_voice, map_location=device, weights_only=False)
+        _wi = processor.process_input_with_cached_prompt(
+            text="hi",
+            cached_prompt=_wp,
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        for k, v in _wi.items():
+            if torch.is_tensor(v):
+                _wi[k] = v.to(device)
+        import threading as _wt
+        _ws = AudioStreamer(batch_size=1, stop_signal=None, timeout=10.0)
+        def _wrun():
+            try:
+                model.generate(**_wi, max_new_tokens=None, cfg_scale=1.5,
+                               tokenizer=processor.tokenizer,
+                               generation_config={"do_sample": False},
+                               verbose=False, all_prefilled_outputs=copy.deepcopy(_wp),
+                               audio_streamer=_ws)
+            finally:
+                _ws.end()
+        _wthread = _wt.Thread(target=_wrun, daemon=True)
+        _wthread.start()
+        for _ in _ws.get_stream(0):
+            pass
+        _wthread.join()
+except Exception as _we:
+    sys.stderr.write(f"[vibevoice-worker] warmup error (non-fatal): {_we}\n")
+
 # ── Request loop ──────────────────────────────────────────────────────────────
 
 while True:
@@ -160,9 +199,9 @@ while True:
             if torch.is_tensor(v):
                 inputs[k] = v.to(device)
 
-        streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=60.0)
-
         import threading as _threading
+        stop_event = _threading.Event()
+        audio_streamer = AudioStreamer(batch_size=1, stop_signal=stop_event, timeout=60.0)
 
         def _generate():
             try:
@@ -174,28 +213,35 @@ while True:
                     generation_config={"do_sample": False},
                     verbose=False,
                     all_prefilled_outputs=copy.deepcopy(all_prefilled),
-                    streamer=streamer,
+                    audio_streamer=audio_streamer,
+                    stop_check_fn=stop_event.is_set,
                 )
             except Exception as exc:
                 sys.stderr.write(f"[vibevoice-worker] generate error: {exc}\n")
                 sys.stderr.flush()
             finally:
-                streamer.end()
+                audio_streamer.end()
 
         t = _threading.Thread(target=_generate, daemon=True)
         t.start()
 
-        # Stream audio chunks out via framed binary protocol
-        for chunk in streamer.get_stream(0):
+        import numpy as np
+        for chunk in audio_streamer.get_stream(0):
             if chunk is None:
                 break
-            # chunk is a float tensor — convert to int16 PCM
-            pcm = (torch.clamp(chunk.float(), -1.0, 1.0) * 32767).short()
-            data = pcm.numpy().tobytes()
+            if torch.is_tensor(chunk):
+                chunk = chunk.detach().cpu().to(torch.float32).numpy()
+            else:
+                chunk = np.asarray(chunk, dtype=np.float32)
+            if chunk.ndim > 1:
+                chunk = chunk.reshape(-1)
+            pcm = np.clip(chunk, -1.0, 1.0)
+            data = (pcm * 32767.0).astype(np.int16).tobytes()
             sys.stdout.buffer.write(struct.pack("<I", len(data)))
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
 
+        stop_event.set()
         t.join()
 
     except Exception as e:
@@ -327,7 +373,7 @@ def _wav_header(sample_rate: int, num_channels: int = 1, bits: int = 16) -> byte
     block_align = num_channels * bits // 8
     return struct.pack(
         "<4sI4s4sIHHIIHH4sI",
-        b"RIFF", data_size + header_size - 8,
+        b"RIFF", 0xFFFFFFFF,
         b"WAVE",
         b"fmt ", fmt_size,
         1, num_channels, sample_rate,

@@ -28,14 +28,11 @@ def _get_model():
         cache_dir = str(
             Path(os.getenv("OMNEX_DATA_PATH", "./data")).parent / "models" / "cache"
         )
-        device = "cuda" if _gpu_available() else "cpu"
+        # Run on CPU to avoid torch CUDA init in the main uvicorn process.
+        # CUDA init alongside jemalloc + onnxruntime-gpu causes SIGABRT.
         _processor = CLIPProcessor.from_pretrained(MODEL_ID, cache_dir=cache_dir)
         _model     = CLIPModel.from_pretrained(MODEL_ID, cache_dir=cache_dir)
         _model.eval()
-
-        if device == "cuda":
-            import torch
-            _model = _model.to(torch.device("cuda"))
 
     return _model, _processor
 
@@ -54,7 +51,7 @@ def embed_image(image) -> list[float]:
     model, processor = _get_model()
 
     inputs = processor(images=image, return_tensors="pt")
-    if _gpu_available():
+    if False:  # GPU disabled — see _get_model comment
         inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -77,7 +74,7 @@ def embed_image_batch(images: list) -> np.ndarray:
 
     model, processor = _get_model()
     inputs = processor(images=images, return_tensors="pt", padding=True)
-    if _gpu_available():
+    if False:  # GPU disabled — see _get_model comment
         inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -99,7 +96,7 @@ def embed_text(text: str) -> list[float]:
     model, processor = _get_model()
 
     inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
-    if _gpu_available():
+    if False:  # GPU disabled — see _get_model comment
         inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -122,7 +119,7 @@ def embed_text_batch(texts: list[str]) -> np.ndarray:
 
     model, processor = _get_model()
     inputs = processor(text=texts, return_tensors="pt", padding=True, truncation=True)
-    if _gpu_available():
+    if False:  # GPU disabled — see _get_model comment
         inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
     with torch.no_grad():

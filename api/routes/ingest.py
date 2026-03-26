@@ -328,38 +328,42 @@ def restore_watches() -> None:
 
 
 def _run_ingestion(path: str, workers: int) -> None:
-    """Run the ingestion pipeline in a background thread."""
-    import logging, traceback
+    """
+    Run the ingestion pipeline in an isolated subprocess.
+    Subprocess isolation prevents ML library heap corruption (torch, onnxruntime-gpu,
+    sentence-transformers) from crashing the uvicorn API process.
+    """
+    import logging, subprocess, sys, os
     log = logging.getLogger("omnex.ingest.bg")
     global _active_path
     _active_cancel.clear()
     _active_path = path
     try:
-        from ingestion.__main__ import run
-        run(Path(path), workers=workers, cancel_event=_active_cancel)
+        env = {**os.environ, "PYTHONPATH": "/app", "PYTHONUNBUFFERED": "1"}
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "ingestion", "--path", path, "--workers", str(workers)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        for line in proc.stdout:
+            log.info(f"[ingest] {line.decode(errors='replace').rstrip()}")
+            if _active_cancel.is_set():
+                proc.terminate()
+                break
+        proc.wait()
+        if proc.returncode not in (0, None, -15):
+            log.error(f"Ingestion subprocess exited with code {proc.returncode}")
     except Exception:
+        import traceback
         log.error(f"Ingestion failed for {path}:\n{traceback.format_exc()}")
     finally:
         _active_path = None
 
 
 def _run_ingestion_and_cleanup(path: str, workers: int, tmp_dir: Path) -> None:
-    """Run ingestion on uploaded files, then remove the temp directory."""
-    import logging, traceback, sys
-    log = logging.getLogger("omnex.ingest.bg")
-    global _active_path
-    _active_cancel.clear()
-    _active_path = path
-    print(f"[ingest] background thread started for {path}", flush=True, file=sys.stderr)
+    """Run ingestion on uploaded files in a subprocess, then remove the temp directory."""
     try:
-        from ingestion.__main__ import run
-        print(f"[ingest] calling run()", flush=True, file=sys.stderr)
-        run(Path(path), workers=workers, cancel_event=_active_cancel)
-        print(f"[ingest] run() completed", flush=True, file=sys.stderr)
-    except Exception:
-        msg = traceback.format_exc()
-        print(f"[ingest] FAILED:\n{msg}", flush=True, file=sys.stderr)
-        log.error(f"Ingestion failed for {path}:\n{msg}")
+        _run_ingestion(path, workers)
     finally:
-        _active_path = None
         shutil.rmtree(tmp_dir, ignore_errors=True)

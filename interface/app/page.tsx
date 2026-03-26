@@ -150,7 +150,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
     setVoiceSupport(hasMediaRecorder)
 
     setTtsSupport(true)
-    setTtsEnabled(false)
+    setTtsEnabled(true)
   }, [])
 
   // Fetch stats on mount + poll every 10s to keep connection indicator live
@@ -211,9 +211,11 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
   const speakText = useCallback(async (text: string) => {
     if (!ttsEnabled) return
     try {
-      const res = await apiFetch(`${API}/voice/speak`, {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (apiKey) headers['X-API-Key'] = apiKey
+      const res = await fetch(`${API}/voice/speak`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body:    JSON.stringify({ text, voice: ttsVoice }),
       })
       if (!res.ok) return
@@ -223,13 +225,13 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       const audio = new Audio(url)
       setIsSpeaking(true)
       audio.onended = () => { setIsSpeaking(false); URL.revokeObjectURL(url) }
-      audio.onerror = () => { setIsSpeaking(false); URL.revokeObjectURL(url) }
-      audio.play()
+      audio.onerror = (e) => { console.warn('TTS audio error:', e); setIsSpeaking(false); URL.revokeObjectURL(url) }
+      await audio.play()
     } catch (e) {
       console.warn('TTS failed:', e)
       setIsSpeaking(false)
     }
-  }, [ttsEnabled, ttsVoice])
+  }, [ttsEnabled, ttsVoice, apiKey, API])
 
   async function handleQuery(query: string) {
     if (!query.trim() || loading) return
@@ -683,7 +685,17 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
                 </div>
                 {messages.length > 0 && (
                   <button
-                    onClick={() => { setMessages([]); setSelectedChunk(null) }}
+                    onClick={() => {
+                      setMessages([])
+                      setSelectedChunk(null)
+                      localStorage.removeItem('omnex_session_id')
+                      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+                      if (apiKey) headers['X-API-Key'] = apiKey
+                      fetch(`${API}/query/sessions`, { method: 'POST', headers })
+                        .then(r => r.json())
+                        .then(d => { if (d.session_id) { setSessionId(d.session_id); localStorage.setItem('omnex_session_id', d.session_id) } })
+                        .catch(() => { setSessionId(null) })
+                    }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 5,
                       padding: '4px 10px', borderRadius: 6,
