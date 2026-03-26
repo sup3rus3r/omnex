@@ -45,8 +45,7 @@ export async function POST(req: Request) {
         model:           anthropic(process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'),
         system:          SYSTEM_PROMPT,
         messages,
-        maxTokens: 1024,
-      })
+        })
       return result.toTextStreamResponse()
     }
 
@@ -56,8 +55,7 @@ export async function POST(req: Request) {
         model:           openai(process.env.OPENAI_MODEL || 'gpt-4o-mini'),
         system:          SYSTEM_PROMPT,
         messages,
-        maxTokens: 1024,
-      })
+        })
       return result.toTextStreamResponse()
     }
 
@@ -72,7 +70,6 @@ export async function POST(req: Request) {
       model:           openai(process.env.LOCAL_LLM_MODEL || 'phi3:mini'),
       system:          SYSTEM_PROMPT,
       messages,
-      maxTokens: 1024,
     })
     return result.toTextStreamResponse()
   } catch (err: any) {
