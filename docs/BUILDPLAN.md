@@ -27,9 +27,9 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 
 | Document | Purpose | Status |
 |---|---|---|
-| Omnex_Architecture.md | System architecture & technical blueprint | v0.1 — active |
-| Omnex_TechDoc.md | Implementation reference for contributors | v0.1 — active |
-| Omnex_BuildPlan.md | This document — living task tracker & decisions log | v0.1 — active |
+| docs/ARCHITECTURE.md | System architecture & technical blueprint | v0.1 — active |
+| docs/TECHDOC.md | Implementation reference for contributors | v0.1 — active |
+| docs/BUILDPLAN.md | This document — living task tracker & decisions log | v0.1 — active |
 
 ---
 
@@ -48,23 +48,26 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 | 007 | Human-in-the-loop for cold start tagging | Auto-tagger needs user data to learn. Surface labeling prompts progressively during ingestion. User builds taxonomy naturally. | 2026-03-26 |
 | 008 | Cold start time is acceptable | 8–96 hours for full drive indexing is expected for a product of this scope. The value proposition justifies it. Frame it as "building your memory", not "indexing". | 2026-03-26 |
 | 009 | FUSE layer is adaptive | WinFsp/cgofuse is the plan. Approach is flexible if platform edge cases require alternatives. Core functionality before OS integration. | 2026-03-26 |
+| 010 | LLM provider abstraction — local, OpenAI, Anthropic | Query/chat layer routes to whichever provider is configured via LLM_PROVIDER env var. Local (Ollama/LM Studio) is default. OpenAI (gpt-5.4) and Anthropic (claude-sonnet-4-6) supported. All embedding/ML models are always local — provider setting only affects the chat/query LLM. | 2026-03-26 |
 
 ---
 
 ## Build Phases
 
-### Phase 0 — Foundation
+### Phase 0 — Foundation ✓ COMPLETE
 **Goal:** Repo scaffolded, services running, environment reproducible.
 
-- [ ] Create GitHub repository (omnex)
-- [ ] Write `docker-compose.yml` — MongoDB + Ollama services
-- [ ] Write `requirements.txt` — full Python dependency list
-- [ ] Write `models/download.py` — first-run model downloader
-- [ ] Write `install.sh` — Linux one-command installer
-- [ ] Write `install.ps1` — Windows one-command installer
+- [x] Create GitHub repository (omnex)
+- [x] Write `docker-compose.yml` — MongoDB + Ollama services
+- [x] Write `requirements.txt` — full Python dependency list
+- [x] Write `models/download.py` — first-run model downloader
+- [x] Write `install.sh` — Linux one-command installer
+- [x] Write `install.ps1` — Windows one-command installer
+- [x] Write `.env.example` — all environment variables documented
+- [x] Write `.gitignore`
+- [x] README.md with vision statement + install instructions
 - [ ] Confirm LEANN installs and initialises correctly on Windows + Linux
 - [ ] Confirm Ollama runs locally with Phi-3 Mini
-- [ ] README.md with vision statement + install instructions
 
 **Exit criteria:** `docker compose up` + install script → all services healthy, models downloaded.
 
