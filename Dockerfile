@@ -20,20 +20,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ngrok binary directly (avoids pyngrok SSL download at runtime)
-RUN curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar -xz -C /usr/local/bin \
-    && chmod +x /usr/local/bin/ngrok
+# Install ngrok binary via official apt repo (more reliable than CDN zip)
+RUN curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+        | tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
+    && echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+        > /etc/apt/sources.list.d/ngrok.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ngrok \
+    && rm -rf /var/lib/apt/lists/* \
+    || echo "ngrok apt install failed — will fall back to pyngrok at runtime"
 
 WORKDIR /app
 
 # Copy and install Python dependencies first (layer cache)
 COPY requirements.txt .
 
-# Install PyTorch CPU build (smaller, no CUDA needed in container)
-# GPU passthrough requires nvidia-docker — handled separately
+# Install PyTorch with CUDA 12.4 support (matches host driver)
 RUN pip install --no-cache-dir \
     torch==2.5.1 torchvision==0.20.1 \
-    --index-url https://download.pytorch.org/whl/cpu
+    --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining dependencies
 RUN pip install --no-cache-dir -r requirements.txt

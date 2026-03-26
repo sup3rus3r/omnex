@@ -175,14 +175,9 @@ def _get_mime(path: Path) -> str:
 
 def is_indexable(path: Path) -> bool:
     """Returns True if the file is a type Omnex can index."""
-    import sys
     if not path.is_file():
-        print(f"[detector] {path}: not a file", flush=True, file=sys.stderr)
         return False
     if path.stat().st_size == 0:
-        print(f"[detector] {path}: zero size", flush=True, file=sys.stderr)
         return False
-    file_type, mime = detect(path)
-    result = file_type != FileType.UNKNOWN
-    print(f"[detector] {path}: mime={mime!r} type={file_type} indexable={result}", flush=True, file=sys.stderr)
-    return result
+    file_type, _ = detect(path)
+    return file_type != FileType.UNKNOWN

@@ -98,7 +98,11 @@ Drop new files into a watched folder and they are indexed automatically. No manu
 
 ### Natural Language Query Engine
 
-Queries are parsed into multi-stage vector searches across all indexes (text, image, audio, video, code), filtered by metadata (date, file type, tags, identity), re-ranked for precision, and assembled into context for an LLM response.
+Queries are parsed into multi-stage vector searches across all indexes (text, image, audio, video, code), filtered by metadata (date, file type, tags, identity), and passed to an LLM that acts as an intelligent filter — deciding which results actually match the request before responding. Only genuinely relevant results are returned.
+
+### Conversational Memory
+
+Every session persists in MongoDB. The last 10 conversation turns are passed as history to every LLM call, enabling coherent multi-turn dialogue about your data. Ask follow-up questions, refine results, or switch topics naturally.
 
 ### Multi-Provider LLM Support
 
@@ -107,6 +111,30 @@ Queries are parsed into multi-stage vector searches across all indexes (text, im
 | **Anthropic** | Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5 | Cloud |
 | **OpenAI** | GPT-4o, GPT-4o-mini | Cloud |
 | **Ollama** | Phi-3, Gemma 3, Llama 3.2 — any local model | Local |
+
+### Voice Input & TTS Output
+
+Voice input uses local Whisper running on-device — press to speak or hold for always-listening Jarvis mode with automatic voice activity detection. Voice output uses high-quality local TTS — Qwen3-TTS on GPU (NVIDIA, 2GB+ VRAM), Kokoro ONNX on CPU. The TTS button is a pulsing brain orb that animates when speaking. The mic button shows a live waveform visualiser during recording. No cloud voice dependency of any kind.
+
+### Remote Access & Agent API
+
+An ngrok tunnel exposes Omnex to the internet with optional API key auth. A JSON-RPC 2.0 MCP server at `/mcp` makes Omnex callable from Claude Desktop, Cursor, Windsurf, or any MCP-compatible agent. Media URLs are HMAC-signed with configurable expiry.
+
+### FUSE Virtual Filesystem
+
+Omnex mounts as a real directory tree at `/mnt/omnex` (Linux/WSL). Browse your indexed data as files — `documents/`, `images/`, `audio/`, `video/`, `code/`, `by_date/YYYY/MM/`. A magic `search/` directory lets any app query Omnex by reading a file named after the query. Write a file to the virtual drive and it is automatically ingested. Delete a file from the virtual drive and it is removed from the index.
+
+### People View
+
+Faces in photos are detected, clustered, and displayed in a dedicated People view. See all photos of each person in a grid, name them with a single click, and query by person name in natural language.
+
+### Timeline View
+
+Browse your entire indexed history by year, month, and file type. Paginated grid view with type filters — a visual map of everything Omnex knows about, organised by when it happened.
+
+### Delete & Manage Index
+
+Remove indexed data directly from the UI — delete a single chunk from the preview pane, or bulk-delete an entire source path from the Ingest panel's source manager. Full control over what stays in your memory.
 
 ---
 
@@ -253,8 +281,11 @@ Check: `mongosh --eval "db.adminCommand('ping')"`. With Docker, no local MongoDB
 | Vector Index | LEANN — file-based, 97% storage savings vs Qdrant |
 | Metadata Store | MongoDB 7 |
 | Binary Store | Content-addressed chunk store |
-| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS, Framer Motion |
+| Frontend | Next.js 14, React 18, TypeScript, Framer Motion |
 | LLM | Anthropic / OpenAI / Ollama (configurable) |
+| TTS | Qwen3-TTS (GPU) / Kokoro ONNX (CPU fallback) |
+| Remote Access | ngrok tunnel + MCP JSON-RPC 2.0 server |
+| Virtual Filesystem | FUSE / fusepy — read-write virtual drive (Linux/WSL) |
 | Infrastructure | Docker Compose |
 
 ---
@@ -298,10 +329,14 @@ Omnex is the open alternative. Local. Private. Agentic-ready. Built for humans a
 | 6 | Code ingestion + CodeBERT | ✅ |
 | 7 | Neural auto-tagger | ✅ |
 | 8 | File watcher — incremental indexing | ✅ |
-| 9 | LLM chat layer + voice output | 🔄 In progress |
-| 10 | Remote access — MCP server + ngrok + API keys | 🔄 In progress |
-| 11 | FUSE filesystem — read | 📋 Planned |
-| 12 | FUSE filesystem — write + sync | 📋 Planned |
+| 9 | LLM chat layer + session memory + high-quality TTS | ✅ |
+| 10 | Remote access — MCP server + ngrok + API keys + signed URLs | ✅ |
+| 11 | FUSE virtual filesystem — read | ✅ |
+| 12 | FUSE filesystem — write + sync | ✅ |
+| 13 | Local Whisper voice + always-listen VAD mode | ✅ |
+| 14 | People view + Timeline view + Delete UI + Settings | ✅ |
+| 15 | Progressive UX — cold start + drive expansion | 📋 Planned |
+| 16 | Multi-agent write API — agents store observations into index | 📋 Planned |
 
 Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Build plan: [docs/BUILDPLAN.md](docs/BUILDPLAN.md) · Implementation reference: [docs/TECHDOC.md](docs/TECHDOC.md)
 

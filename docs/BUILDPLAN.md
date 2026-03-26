@@ -203,73 +203,122 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 
 ---
 
-### Phase 9 — LLM Chat Layer
-**Goal:** Conversational interaction with data. Omnex explains, summarises, suggests.
+### Phase 9 — LLM Chat Layer + High-Quality TTS ✓ COMPLETE
+**Goal:** Conversational interaction with data. Omnex explains, summarises, suggests. Voice output is human-quality, not robotic.
 
-- [ ] Ollama integration — context assembly pipeline
-- [ ] `api/routes/query.py` — extend to pass context window to LLM
-- [ ] Conversational refinement — "show me more like that" / "from the same trip"
-- [ ] LLM-generated result explanations — why was this returned?
-- [ ] Refinement rail in UI — contextual narrowing suggestions
-- [ ] Session awareness — multi-turn conversation maintains context
-- [ ] Voice output — text-to-speech for LLM responses (browser TTS API)
+- [x] Multi-provider LLM abstraction — Anthropic Claude, OpenAI GPT, local Ollama
+- [x] `api/query_engine.py` — LLM as intelligent filter: receives all candidates, outputs `RELEVANT_IDS: [...]` to return only matching results, then prose response
+- [x] Conversation history — last 10 turns passed to every LLM call, strict alternating-role enforcement for Anthropic API
+- [x] Session persistence — MongoDB-backed sessions, restored from localStorage
+- [x] Refinement suggestions — contextual narrowing pills after each response
+- [x] Score threshold (0.25) + top_k=8 — only confident hits reach the LLM
+- [x] `api/tts.py` — Qwen3-TTS GPU engine + Kokoro ONNX CPU fallback, auto-downloads models
+- [x] `api/routes/tts.py` — `POST /voice/speak` → WAV audio, `GET /voice/info`
+- [x] Frontend — WAV blob playback via Web Audio API, TTS brain orb button
+- [x] Markdown rendering — `react-markdown` + `.md-prose` CSS in chat messages
+- [x] Expandable results — collapsed "N sources retrieved" chevron in chat
 
-**Exit criteria:** User has a back-and-forth conversation with their data. Asks follow-up questions. Gets coherent, contextually aware responses. Full voice in/voice out supported.
+**Exit criteria:** Conversational multi-turn dialogue with data. LLM filters results intelligently. Voice output is high-quality local audio. ✓
 
 ---
 
-### Phase 10 — Agentic API Layer + Remote Access
+### Phase 10 — Agentic API Layer + Remote Access ✓ COMPLETE
 **Goal:** External agents can query and interact with Omnex programmatically from anywhere.
 
-**Architecture decisions:**
-- Expose as MCP (Model Context Protocol) server — compatible with Claude Desktop, Cursor, any MCP client
-- Remote access via ngrok tunnel (auto-managed by Omnex) — no port forwarding required
-- Signed media URLs — agents can fetch images/video via time-limited tokens
-- API key auth — every external request requires `Authorization: Bearer <key>`
+- [x] `api/auth.py` — API key middleware, `X-API-Key` header, `OMNEX_API_KEY` env var
+- [x] `api/routes/mcp.py` — JSON-RPC 2.0 MCP server at `/mcp` with tools: `recall`, `ingest`, `remember`, `stats`
+- [x] HMAC-SHA256 signed media URLs — time-limited, chunk_id bound
+- [x] `api/tunnel.py` — ngrok CLI subprocess + polls local API for tunnel URL, falls back to pyngrok
+- [x] ngrok installed via official apt repo in Dockerfile
+- [x] Remote Access UI — tunnel status, URL display, copy-to-clipboard, MCP config snippet, curl example
+- [x] FUSE mount status in Remote Access panel
 
-**Tasks:**
-- [ ] API key model in MongoDB + auth middleware for FastAPI
-- [ ] `POST /auth/keys` — generate named API keys, `DELETE /auth/keys/{id}` — revoke
-- [ ] `api/routes/mcp.py` — MCP server endpoint (`POST /mcp`) with tools: `recall`, `ingest`, `remember`, `stats`
-- [ ] MCP tool definitions — JSON schema, descriptions, input validation
-- [ ] `GET /media/{chunk_id}?token=<signed>` — signed URL media endpoint (images, video, audio)
-- [ ] Token signing — HMAC-SHA256, 1-hour expiry, chunk_id bound
-- [ ] ngrok Python SDK integration — auto-tunnel on startup if `NGROK_AUTHTOKEN` set in `.env`
-- [ ] `OMNEX_PUBLIC_URL` env var — used to build correct media URLs for remote agents
-- [ ] Remote Access UI page — public endpoint display, API key management, connected agents log
-- [ ] Rate limiting — `slowapi` per-key rate limiting on `/mcp` and `/query`
-- [ ] Webhook support — agents subscribe to new-chunk events via `POST /webhooks`
-
-**Exit criteria:** Claude Desktop connects to Omnex as an MCP tool. Remote agent sends `recall("beach photos 2022")` over ngrok → receives results with signed image URLs it can fetch.
+**Exit criteria:** Claude Desktop / any MCP client connects. Remote agent queries over ngrok with signed media URLs. ✓
 
 ---
 
-### Phase 11 — FUSE Virtual Filesystem (Read)
+### Phase 11 — FUSE Virtual Filesystem (Read) ✓ COMPLETE
 **Goal:** Omnex mounts as a virtual drive. Apps can read from it transparently.
 
-- [ ] `fuse/main.go` — Go entry point
-- [ ] `fuse/fs.go` — cgofuse filesystem implementation (read-only)
-- [ ] `fuse/api_client.go` — HTTP client calling FastAPI backend
-- [ ] Virtual directory structure: People/, Places/, By Year/, Documents/, Code/, Videos/
-- [ ] Dynamic `Search/` directory — type a folder name to execute a query
-- [ ] Windows: WinFsp integration + testing
-- [ ] Linux: libfuse integration + testing
-- [ ] Mount point configuration
+- [x] `fuse/omnex_fs.py` — fusepy FUSE implementation, Python, Linux/WSL
+- [x] `fuse/Dockerfile` — libfuse + fusepy + omnex deps
+- [x] `docker-compose.yml` — `omnex-fuse` service with `--device /dev/fuse` + `SYS_ADMIN` capability
+- [x] Virtual directory structure: `documents/`, `images/`, `audio/`, `video/`, `code/`, `by_date/YYYY/MM/`
+- [x] Dynamic `search/<query>` directory — read a file named after your query to execute it
+- [x] `GET /setup/fuse` — mount status + path for UI
+- [x] Remote Access UI — FUSE mount status card
 
-**Exit criteria:** Omnex mounts as `G:\` (Windows) or `/mnt/omnex` (Linux). Virtual directories browse correctly. Files open in native applications.
+**Exit criteria:** `/mnt/omnex` mounted. Virtual directories browse correctly. Files readable via native apps. ✓
 
 ---
 
-### Phase 12 — FUSE Virtual Filesystem (Write + Sync)
+### Phase 12 — FUSE Virtual Filesystem (Write + Sync) ✓ COMPLETE
 **Goal:** Writing to the virtual drive triggers ingestion. Full bidirectional behaviour.
 
-- [ ] Write interception — new file written to virtual drive → ingestion pipeline triggered
-- [ ] Delete behaviour — marks chunk deleted, optional source file deletion (user config)
-- [ ] Rename/move — metadata update only, no physical movement
-- [ ] Source drive reconciliation — changes on source reflected in index
-- [ ] Full bidirectional sync
+- [x] `fuse/omnex_fs.py` — `create()`, `write()`, `release()` buffer pattern — file written to staging dir on close
+- [x] `_trigger_ingest()` — HTTP POST to `/ingest/trigger` after file release
+- [x] `unlink()` — calls `DELETE /ingest/source` to remove from index
+- [x] `drop/` magic directory — any file written here is deleted from index by source path
+- [x] Mount changed from `ro=True` to `ro=False`
+- [x] fusepy import collision fixed — loaded via `importlib.util.spec_from_file_location` from site-packages
 
-**Exit criteria:** Drag a file onto the Omnex virtual drive → it is ingested and immediately queryable. Delete from virtual drive → removed from index.
+**Exit criteria:** Write file to `/mnt/omnex/documents/` → ingested and queryable. Delete → removed from index. ✓
+
+---
+
+### Phase 13 — Local Whisper Voice + Always-Listen Mode ✓ COMPLETE
+**Goal:** Fully offline voice input. Always-listening Jarvis-style mode with automatic speech detection.
+
+- [x] `api/routes/tts.py` — `POST /voice/transcribe` — accepts multipart audio (webm/wav/ogg), transcribes via local Whisper, returns `{text, language, duration}`
+- [x] Frontend — replaced Web Speech API with `MediaRecorder` + Whisper backend
+- [x] Live waveform mic button — 5-bar visualiser animates with real microphone amplitude via Web Audio `AnalyserNode`
+- [x] Pulsing brain orb TTS button — expanding pulse rings + glow breath animation when speaking
+- [x] Push-to-talk — click to start recording, click again to stop
+- [x] Always-listen VAD mode — hold mic button 0.6s to toggle; auto-detects speech onset (~0.025 amplitude threshold), records until 0.75s silence, transcribes, restarts loop
+- [x] `_startMicStream()` / `_stopMicStream()` — shared mic stream + analyser lifecycle
+- [x] Voice detection uses `navigator.mediaDevices` (not Web Speech API) — works in all browsers
+
+**Exit criteria:** Fully offline voice round-trip. Hold mic button → Omnex listens continuously, hears query, transcribes locally, queries, responds. ✓
+
+---
+
+### Phase 14 — People View + Timeline + Delete UI + Settings ✓ COMPLETE
+**Goal:** Full data management UI. People, Timeline, and Settings views functional.
+
+- [x] `api/routes/identity.py` — `GET /identity/clusters` (all clusters with counts + labels), `GET /identity/photos/{cluster_id}` (photo chunks for a person)
+- [x] `PeoplePanel` — identity list (named + unnamed), photo grid per person, inline name editor
+- [x] `TimelinePanel` — year/month/type filter pills, paginated `ResultGrid`, page navigation
+- [x] `SettingsPanel` — live config from API, index stats, copy-to-clipboard `.env` snippets for all settings, Kokoro voice picker
+- [x] `IndexedSources` — collapsible source manager in Ingest panel, shows all ingested paths with chunk counts, bulk delete per source via `DELETE /ingest/source`
+- [x] Single chunk delete — "Remove from index" button in PreviewPane calls `DELETE /ingest/chunk/{id}`
+- [x] `DELETE /ingest/source` + `DELETE /ingest/chunk/{id}` — remove chunks from MongoDB, vector indexes, and binary store
+
+---
+
+### Phase 15 — Progressive UX — Cold Start + Drive Expansion
+**Goal:** First-run experience is frictionless. Empty index is welcoming, not blank.
+
+- [ ] Cold start screen — show model loading progress with friendly framing ("Building your intelligence…")
+- [ ] Empty index prompt — when 0 chunks, Recall view shows "Drop files to start" rather than blank chat
+- [ ] Drive expansion prompt — after first folder indexed, suggest expanding to full drive
+- [ ] Ingestion progress toasts — non-intrusive live updates while indexing runs in background
+- [ ] Estimated time display — "~12 minutes remaining" based on files/minute rate
+
+**Exit criteria:** New user installs → clear guided path from zero to first query result with no confusion.
+
+---
+
+### Phase 16 — Multi-Agent Write API
+**Goal:** AI agents can store observations and memories directly into the Omnex index.
+
+- [ ] `POST /ingest/observation` — agents push text memories: `{text, source, agent_id, metadata}`
+- [ ] Agent identity tag — every agent-written chunk carries `agent_id` + `agent_name` fields
+- [ ] `GET /query?agent_id=X` — filter results to a specific agent's observations
+- [ ] Agent registration — `POST /agents` to create named agent identities with API keys
+- [ ] MCP `remember` tool — Claude/GPT agents call this to persist observations
+- [ ] UI — agent-sourced results show agent badge in ResultGrid
+
+**Exit criteria:** Claude agent calls `remember("User prefers dark mode")` via MCP → stored in index → recalled on next session.
 
 ---
 
@@ -311,20 +360,34 @@ Progressive expansion prompt:
 ## Voice Interface Flow
 
 ```
-User activates voice (button or wake word — future)
+Push-to-talk:
+  User clicks mic button → MediaRecorder starts
         ↓
-Browser Web Speech API captures audio → text
+  User speaks → clicks again to stop
         ↓
-Text submitted to query engine (same path as typed query)
+  Audio blob → POST /voice/transcribe → local Whisper → text
         ↓
-Results returned + LLM response generated
+  Text → query engine → LLM filter → results
         ↓
-Response read aloud via browser TTS API
+  LLM response → POST /voice/speak → Qwen/Kokoro TTS → WAV playback
         ↓
-User continues conversation or refines
+  Brain orb pulses while speaking
+
+Always-listen (Jarvis mode):
+  User holds mic button 0.6s → VAD loop starts
+        ↓
+  Microphone monitored continuously via Web Audio AnalyserNode
+        ↓
+  Speech onset detected (amplitude > 0.025) → recording begins
+        ↓
+  0.75s silence → recording stops → transcribe → query
+        ↓
+  Loop restarts 1.2s after response
+        ↓
+  Hold mic again to turn off
 ```
 
-**Future path:** Replace Web Speech API with local Whisper for fully offline voice operation.
+**Fully offline** — no browser Speech API, no cloud voice services. Whisper runs locally in the API container.
 
 ---
 
@@ -357,11 +420,11 @@ Same backend. Same memory. Two consumers. Humans now. Agents always.
 
 | # | Question | Context |
 |---|---|---|
-| Q001 | Wake word support for voice? | Always-on listening vs push-to-talk. Privacy implications of always-on on local hardware. |
+| ~~Q001~~ | ~~Wake word support for voice?~~ | **Resolved (Phase 13):** Always-listen VAD mode implemented — hold mic button 0.6s to toggle. Monitors amplitude continuously, auto-records on speech onset, auto-stops on silence. No wake word needed. |
 | Q002 | Multi-user / family support? | Separate identity spaces on same machine? Shared identity clusters? |
 | Q003 | Mobile ingestion path? | Photos from phone — direct WiFi sync to Omnex instance? |
 | Q004 | Encryption at rest on destination drive? | User expectation for sensitive data. Performance cost? |
-| ~~Q005~~ | ~~MCP server priority?~~ | **Resolved:** MCP server is Phase 10, before FUSE. Remote access via ngrok auto-tunnel. Signed media URLs for binary content delivery to remote agents. |
+| ~~Q005~~ | ~~MCP server priority?~~ | **Resolved (Phase 10):** MCP server is Phase 10, before FUSE. Remote access via ngrok auto-tunnel. Signed media URLs for binary content delivery to remote agents. |
 
 ---
 

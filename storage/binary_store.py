@@ -93,6 +93,21 @@ def read_thumbnail(chunk_id: str) -> bytes | None:
     return path.read_bytes()
 
 
+def delete_chunk(data_ref: str) -> bool:
+    """Delete a single stored chunk by its data_ref."""
+    path = _chunks_dir() / data_ref
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+def chunk_size(data_ref: str) -> int:
+    """Return the size in bytes of a stored chunk."""
+    path = _chunks_dir() / data_ref
+    return path.stat().st_size if path.exists() else 0
+
+
 def delete_file_chunks(content_hash: str) -> int:
     """Delete all stored chunks for a given content hash. Returns count deleted."""
     prefix = content_hash[:2]

@@ -24,7 +24,7 @@ router = APIRouter()
 
 class QueryRequest(BaseModel):
     query:            str          = Field(..., min_length=1, max_length=2000)
-    top_k:            int          = Field(default=20, ge=1, le=100)
+    top_k:            int          = Field(default=8, ge=1, le=50)
     file_type:        str | None   = Field(default=None)
     date_from:        datetime | None = Field(default=None)
     date_to:          datetime | None = Field(default=None)

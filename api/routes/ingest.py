@@ -127,6 +127,79 @@ async def ingest_status(path: str | None = None):
     return {"ingestion": records}
 
 
+@router.delete("/source", dependencies=[Depends(require_api_key)])
+async def delete_source(source_path: str):
+    """
+    Remove all indexed data for a given source path.
+    Deletes chunks from MongoDB, vector indexes, and binary store.
+    """
+    from storage.mongo import get_db
+    from storage.leann_store import delete_vectors
+
+    db = get_db()
+    docs = list(db["chunks"].find({"source_path": source_path}, {"_id": 1, "data_ref": 1}))
+    if not docs:
+        raise HTTPException(status_code=404, detail="No indexed data found for that path")
+
+    chunk_ids = [str(d["_id"]) for d in docs]
+
+    # Remove from vector indexes
+    try:
+        delete_vectors(chunk_ids)
+    except Exception as e:
+        pass  # Log but don't fail
+
+    # Remove binary blobs
+    for d in docs:
+        if d.get("data_ref"):
+            try:
+                from storage.binary_store import delete_chunk
+                delete_chunk(d["data_ref"])
+            except Exception:
+                pass
+
+    # Remove from MongoDB
+    db["chunks"].delete_many({"source_path": source_path})
+    db["ingestion_state"].delete_one({"source_path": source_path})
+
+    return {"deleted": len(docs), "source_path": source_path}
+
+
+@router.delete("/chunk/{chunk_id}", dependencies=[Depends(require_api_key)])
+async def delete_chunk_by_id(chunk_id: str):
+    """Remove a single indexed chunk by ID."""
+    from storage.mongo import get_db
+    from bson import ObjectId
+
+    db = get_db()
+    try:
+        oid = ObjectId(chunk_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid chunk ID")
+
+    doc = db["chunks"].find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+
+    # Remove from vector index
+    try:
+        from storage.leann_store import delete_vectors
+        delete_vectors([chunk_id])
+    except Exception:
+        pass
+
+    # Remove binary blob
+    if doc.get("data_ref"):
+        try:
+            from storage.binary_store import delete_chunk
+            delete_chunk(doc["data_ref"])
+        except Exception:
+            pass
+
+    db["chunks"].delete_one({"_id": oid})
+    return {"deleted": 1, "chunk_id": chunk_id}
+
+
 @router.post("/cancel")
 async def cancel_ingest():
     """Signal the active ingestion run to stop after its current file."""

@@ -134,7 +134,7 @@ def _extract_person_name(query: str) -> str | None:
 
 async def search(
     query: str,
-    top_k: int = 20,
+    top_k: int = 8,
     file_type_filter: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
@@ -177,10 +177,6 @@ async def search(
             hits = leann_search(IndexName.TEXT, text_vec, top_k=top_k)
             raw_results.extend(hits)
 
-        # Always search audio/video transcripts for non-visual text queries
-        audio_hits = leann_search(IndexName.AUDIO, text_vec, top_k=top_k)
-        raw_results.extend(audio_hits)
-
     # Code search — only when query explicitly mentions code concepts
     if intent["code"]:
         from embeddings.code import embed as embed_code
@@ -189,30 +185,40 @@ async def search(
         raw_results.extend(code_hits)
 
     # Visual search — CLIP text → image + video frame space
-    if intent["visual"] or not raw_results:
+    if intent["visual"]:
         from embeddings.image import embed_text as clip_text
         clip_vec = clip_text(query)
-
         hits = leann_search(IndexName.IMAGE, clip_vec, top_k=top_k)
         raw_results.extend(hits)
-
         video_hits = leann_search(IndexName.VIDEO, clip_vec, top_k=top_k)
         raw_results.extend(video_hits)
 
-    # Fallback — broad text search including audio transcripts
-    if not raw_results:
-        from embeddings.text import embed as embed_text
-        text_vec = embed_text(query).tolist()
-        hits = leann_search(IndexName.TEXT, text_vec, top_k=top_k)
-        raw_results.extend(hits)
+    # Audio — only search if query seems audio-related or no results yet
+    audio_keywords = {"audio", "podcast", "recording", "transcript", "said", "heard", "spoke", "call", "meeting", "interview", "voice"}
+    if not raw_results or bool(set(query.lower().split()) & audio_keywords):
+        if "text_vec" not in dir():
+            from embeddings.text import embed as embed_text
+            text_vec = embed_text(query).tolist()
         audio_hits = leann_search(IndexName.AUDIO, text_vec, top_k=top_k)
         raw_results.extend(audio_hits)
+
+    # Fallback — if still nothing, run broad visual search
+    if not raw_results:
+        from embeddings.image import embed_text as clip_text
+        clip_vec = clip_text(query)
+        hits = leann_search(IndexName.IMAGE, clip_vec, top_k=top_k)
+        raw_results.extend(hits)
 
     # Fetch chunk documents and apply filters
     results: list[QueryResult] = []
     seen_chunk_ids: set[str] = set()
 
+    # Minimum relevance threshold — drop low-confidence hits
+    SCORE_THRESHOLD = 0.25
+
     for hit in sorted(raw_results, key=lambda x: x["score"], reverse=True):
+        if hit.get("score", 0) < SCORE_THRESHOLD:
+            break  # sorted descending — everything after is worse
         chunk_id = hit.get("chunk_id")
         if not chunk_id or chunk_id in seen_chunk_ids:
             continue
@@ -264,17 +270,21 @@ async def search(
         if len(results) >= top_k:
             break
 
-    # LLM response
+    # LLM filter + response — LLM sees all candidates, returns only relevant ones + answer
     llm_response = None
+    final_results = results
     if results:
-        llm_response = await _ask_llm(query, results[:5], history=history or [])
+        llm_response, kept_ids = await _ask_llm(query, results, history=history or [])
+        if kept_ids is not None:
+            id_set = set(kept_ids)
+            final_results = [r for r in results if r.chunk_id in id_set]
 
-    refinements = _suggest_refinements(query, intent, results)
+    refinements = _suggest_refinements(query, intent, final_results)
 
     return QueryResponse(
         query=query,
-        results=results,
-        total=len(results),
+        results=final_results,
+        total=len(final_results),
         llm_response=llm_response,
         suggested_refinements=refinements,
         session_id=session_id,
@@ -311,46 +321,95 @@ async def _ask_llm(
     query: str,
     results: list[QueryResult],
     history: list[dict] | None = None,
-) -> str | None:
-    """Pass top results + conversation history to the configured LLM provider."""
-    import os
+) -> tuple[str | None, list[str] | None]:
+    """
+    Pass candidate results to LLM. LLM acts as intelligent filter:
+    1. Decides which candidates actually match the user's request
+    2. Returns a natural language response referencing only those items
+
+    Returns (llm_response, list_of_kept_chunk_ids).
+    kept_ids is None if LLM unavailable (fall back to returning all results).
+    """
+    import os, json, logging
+    log = logging.getLogger(__name__)
     provider = os.getenv("LLM_PROVIDER", "local").lower()
 
     context  = _build_context(results)
+    log.info(f"Sending {len(results)} candidates to LLM:\n{context[:600]}")
     messages = _build_messages(query, context, history or [])
 
     try:
         if provider == "anthropic":
-            return await _llm_anthropic(messages)
+            raw = await _llm_anthropic(messages)
         elif provider == "openai":
-            return await _llm_openai(messages)
+            raw = await _llm_openai(messages)
         else:
-            return await _llm_local(messages)
+            raw = await _llm_local(messages)
+
+        log.info(f"LLM raw response:\n{raw[:800]}")
+
+        # Parse structured response — LLM returns JSON block + prose
+        kept_ids, response_text = _parse_llm_filter_response(raw, results)
+        log.info(f"Kept IDs: {kept_ids}")
+        return response_text, kept_ids
+
     except ModuleNotFoundError as e:
-        import logging
-        logging.getLogger(__name__).warning(f"LLM call skipped (missing package: {e}) — streaming via frontend")
-        return None
+        log.warning(f"LLM call skipped (missing package: {e})")
+        return None, None
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"LLM call failed: {e}")
-        return None
+        log.warning(f"LLM call failed: {e}")
+        return None, None
+
+
+def _parse_llm_filter_response(raw: str, candidates: list[QueryResult]) -> tuple[list[str], str]:
+    """
+    Extract the JSON filter block and prose response from LLM output.
+    Expected format:
+        RELEVANT_IDS: ["id1", "id2"]
+        <prose response>
+    Falls back to returning all IDs if parsing fails.
+    """
+    import re, json
+    all_ids = [r.chunk_id for r in candidates]
+
+    match = re.search(r'RELEVANT_IDS:\s*(\[.*?\])', raw, re.DOTALL)
+    if match:
+        try:
+            kept = json.loads(match.group(1))
+            prose = raw[match.end():].strip()
+            # Validate — only keep IDs that actually exist in candidates
+            valid = [i for i in kept if i in set(all_ids)]
+            return valid if valid else all_ids, prose or raw
+        except Exception:
+            pass
+
+    # LLM didn't follow format — return all and use full response as prose
+    return all_ids, raw
 
 
 def _build_context(results: list[QueryResult]) -> str:
     parts = []
     for i, r in enumerate(results, 1):
-        snippet = (r.text or "")[:500]
+        snippet = (r.text or "")[:400]
+        date = r.metadata.get("created_at") or r.metadata.get("modified_at") or ""
+        date_str = f" | {date}" if date else ""
         parts.append(
-            f"[{i}] {r.file_type.upper()} — {r.source_path}\n{snippet}"
+            f"[{i}] ID:{r.chunk_id} | {r.file_type.upper()} | {r.source_path}{date_str}\n{snippet}"
         )
     return "\n\n".join(parts)
 
 
 _SYSTEM_PROMPT = (
-    "You are Omnex, an AI memory assistant. "
-    "You help users recall and understand their personal data — documents, photos, code, audio, and video. "
-    "When relevant search results are provided, reference them by number. "
-    "Be concise and specific. If the user asks a follow-up, use conversation history to answer in context."
+    "You are Omnex, a personal AI memory assistant. "
+    "You have access to the user's indexed personal data. "
+    "When candidates are provided, they ARE real items from the user's data — treat them as such. "
+    "Your job: read the candidates, pick only the ones that match the request, and answer naturally. "
+    "ALWAYS begin your reply with exactly this line (no exceptions):\n"
+    "RELEVANT_IDS: [\"id1\", \"id2\"]\n"
+    "Use the actual ID values from the candidates (the ID: field). "
+    "Then write a concise natural response about what you found. "
+    "If none match: RELEVANT_IDS: [] then explain what you found instead. "
+    "Do not use markdown formatting. Do not use bullet points or bold text. Write in plain sentences."
 )
 
 
@@ -358,15 +417,39 @@ def _build_messages(query: str, context: str, history: list[dict]) -> list[dict]
     """Build a messages array with system prompt, prior history, and current turn."""
     messages: list[dict] = []
 
-    # Prior conversation turns (role: user/assistant)
+    # Prior conversation turns — skip empty/None content, coerce to string
     for turn in history:
-        messages.append({"role": turn["role"], "content": turn["content"]})
+        role    = turn.get("role", "user")
+        content = turn.get("content") or ""
+        if not isinstance(content, str):
+            content = str(content)
+        content = content.strip()
+        if not content:
+            continue  # Anthropic rejects empty-content messages
+        if role not in ("user", "assistant"):
+            continue
+        messages.append({"role": role, "content": content})
+
+    # Anthropic requires alternating user/assistant turns — deduplicate consecutive same roles
+    deduped: list[dict] = []
+    for msg in messages:
+        if deduped and deduped[-1]["role"] == msg["role"]:
+            deduped[-1]["content"] += "\n" + msg["content"]
+        else:
+            deduped.append(msg)
+    messages = deduped
 
     # Current user turn — include retrieved context
-    user_content = f'User query: "{query}"'
+    user_content = f'User request: "{query}"'
     if context:
-        user_content += f"\n\nRelevant items from personal data:\n\n{context}"
-    user_content += "\n\nProvide a concise, helpful response. Reference items by number where relevant."
+        user_content += (
+            f"\n\nThe following items were retrieved from the user's personal data index. "
+            f"These are REAL files that exist in their data:\n\n{context}\n\n"
+            f"Based on the request, select only the items that match. "
+            f"Start your reply with RELEVANT_IDS: [...] using the ID values shown, then respond naturally."
+        )
+    else:
+        user_content += "\n\nNo items were found in the index. Respond conversationally."
     messages.append({"role": "user", "content": user_content})
 
     return messages

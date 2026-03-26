@@ -4,17 +4,23 @@ Mounts the Omnex index as a real directory tree.
 
 Structure:
   /omnex/
-    documents/        — all indexed documents
-    images/           — all indexed images
-    audio/            — all indexed audio
-    video/            — all indexed video
-    code/             — all indexed code files
+    documents/        — all indexed documents (read + write)
+    images/           — all indexed images (read + write)
+    audio/            — all indexed audio (read + write)
+    video/            — all indexed video (read + write)
+    code/             — all indexed code files (read + write)
+    drop/             — write any file here → immediately ingested
     by_date/
       YYYY/
         MM/
-          filename    — files organised by ingestion date
-    search/           — magic directory: name a file to query
-      what is X       — reading this file returns search results as text
+          filename    — files organised by ingestion date (read-only)
+    search/           — magic directory: name a file to run a query (read-only)
+
+Write behaviour:
+  - Writing a file to documents/, images/, audio/, video/, code/, or drop/
+    → file is saved to a staging area, then submitted to the ingestion pipeline
+  - Deleting a file from any type directory
+    → chunk is removed from MongoDB and the vector index
 
 Usage:
     python -m fuse.omnex_fs --mount /mnt/omnex
@@ -27,6 +33,7 @@ import logging
 import os
 import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -51,29 +58,32 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)-8s %(message)s")
 log = logging.getLogger("omnex.fuse")
 
+# Staging directory for incoming writes
+_STAGE_DIR = Path(os.getenv("OMNEX_DATA_PATH", "/data")) / "fuse_stage"
+_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _now_ts() -> int:
     return int(time.time())
 
 
-def _dir_stat() -> dict:
+def _dir_stat(writable: bool = False) -> dict:
     t = _now_ts()
+    mode = stat.S_IFDIR | (0o755 if writable else 0o555)
     return dict(
-        st_mode=stat.S_IFDIR | 0o555,
-        st_nlink=2,
-        st_size=0,
+        st_mode=mode, st_nlink=2, st_size=0,
         st_atime=t, st_mtime=t, st_ctime=t,
         st_uid=os.getuid(), st_gid=os.getgid(),
     )
 
 
-def _file_stat(size: int, mtime: int | None = None) -> dict:
+def _file_stat(size: int, mtime: int | None = None, writable: bool = False) -> dict:
     t = mtime or _now_ts()
+    mode = stat.S_IFREG | (0o644 if writable else 0o444)
     return dict(
-        st_mode=stat.S_IFREG | 0o444,
-        st_nlink=1,
-        st_size=size,
+        st_mode=mode, st_nlink=1, st_size=size,
         st_atime=t, st_mtime=t, st_ctime=t,
         st_uid=os.getuid(), st_gid=os.getgid(),
     )
@@ -112,34 +122,88 @@ def _all_chunks() -> list[dict]:
     ).limit(5000))
 
 
+def _delete_chunks_for_source(source_path: str) -> int:
+    """Remove all chunks for a source path from MongoDB and vector indexes."""
+    db = _get_db()
+    docs = list(db["chunks"].find({"source_path": source_path}, {"_id": 1, "data_ref": 1}))
+    if not docs:
+        return 0
+
+    chunk_ids = [str(d["_id"]) for d in docs]
+
+    # Remove from vector indexes
+    try:
+        from storage.leann_store import delete_vectors
+        delete_vectors(chunk_ids)
+    except Exception as e:
+        log.warning(f"Vector delete failed: {e}")
+
+    # Remove binary blobs
+    for d in docs:
+        if d.get("data_ref"):
+            try:
+                from storage.binary_store import delete_chunk
+                delete_chunk(d["data_ref"])
+            except Exception:
+                pass
+
+    # Remove from MongoDB
+    db["chunks"].delete_many({"source_path": source_path})
+    log.info(f"Deleted {len(docs)} chunks for {source_path}")
+    return len(docs)
+
+
 # ── Name helpers ──────────────────────────────────────────────────────────────
 
 def _safe_name(path: str, chunk_id: str, chunk_index: int) -> str:
-    """Derive a unique filename from source path."""
     base = Path(path).name or "file"
-    # Make unique if multiple chunks from same file
     if chunk_index > 0:
         stem = Path(base).stem
         ext  = Path(base).suffix
         base = f"{stem}_chunk{chunk_index}{ext}"
-    # Sanitise
     base = base.replace("/", "_").replace("\x00", "")
     return base or f"chunk_{chunk_id[:8]}"
+
+
+# ── Ingestion trigger ─────────────────────────────────────────────────────────
+
+def _trigger_ingest(file_path: Path) -> None:
+    """Submit a file to the Omnex ingestion pipeline via the API."""
+    import threading
+
+    def _run():
+        try:
+            import httpx
+            api = os.getenv("OMNEX_API_URL", "http://omnex-api:8000")
+            with open(file_path, "rb") as f:
+                resp = httpx.post(
+                    f"{api}/ingest/upload",
+                    files={"file": (file_path.name, f)},
+                    timeout=120,
+                )
+            if resp.status_code == 200:
+                log.info(f"FUSE ingestion submitted: {file_path.name}")
+            else:
+                log.warning(f"FUSE ingestion failed ({resp.status_code}): {resp.text[:200]}")
+        except Exception as e:
+            log.error(f"FUSE ingestion error: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # ── FUSE implementation ───────────────────────────────────────────────────────
 
 class OmnexFS(Operations):
     """
-    Read-only FUSE filesystem over the Omnex index.
-    All reads hit MongoDB + binary store on demand — no in-memory cache needed
-    for correctness (FUSE caches at the kernel level).
+    Read-write FUSE filesystem over the Omnex index.
+    - Read: serves indexed files from MongoDB + binary store
+    - Write: buffers incoming files, triggers ingestion on close
+    - Delete: removes chunks from MongoDB + vector index
     """
 
-    # Top-level directories
-    _TOP = {"documents", "images", "audio", "video", "code", "by_date", "search"}
+    _TOP = {"documents", "images", "audio", "video", "code", "drop", "by_date", "search"}
+    _WRITABLE = {"documents", "images", "audio", "video", "code", "drop"}
 
-    # Map top-level dir → MongoDB file_type
     _TYPE_MAP = {
         "documents": "document",
         "images":    "image",
@@ -149,39 +213,45 @@ class OmnexFS(Operations):
     }
 
     def __init__(self):
-        self._search_cache: dict[str, bytes] = {}  # query → result bytes
+        self._search_cache: dict[str, bytes] = {}
+        # fh → (Path, bytearray) for in-progress writes
+        self._write_buffers: dict[int, tuple[Path, bytearray]] = {}
+        self._next_fh = 1
 
     # ── Filesystem metadata ────────────────────────────────────────────────────
 
     def getattr(self, path: str, fh=None) -> dict:
         parts = [p for p in path.split("/") if p]
 
-        # Root
         if not parts:
             return _dir_stat()
 
         top = parts[0]
 
-        # Top-level dirs
         if len(parts) == 1:
             if top in self._TOP:
-                return _dir_stat()
+                return _dir_stat(writable=top in self._WRITABLE)
             raise FuseOSError(errno.ENOENT)
 
-        # Type directories (documents/, images/, etc.)
         if top in self._TYPE_MAP:
             if len(parts) == 2:
-                # File in type dir — look up by name
                 chunks = _chunks_by_type(self._TYPE_MAP[top])
                 for c in chunks:
                     name = _safe_name(c["source_path"], str(c["_id"]), c.get("chunk_index", 0))
                     if name == parts[1]:
-                        size = self._chunk_size(c)
+                        size  = self._chunk_size(c)
                         mtime = int(c["created_at"].timestamp()) if c.get("created_at") else None
                         return _file_stat(size, mtime)
             raise FuseOSError(errno.ENOENT)
 
-        # by_date/YYYY/MM/filename
+        if top == "drop":
+            if len(parts) == 2:
+                # Staged files appear here while being written
+                stage = _STAGE_DIR / parts[1]
+                if stage.exists():
+                    return _file_stat(stage.stat().st_size, writable=True)
+            raise FuseOSError(errno.ENOENT)
+
         if top == "by_date":
             if len(parts) <= 3:
                 return _dir_stat()
@@ -193,7 +263,6 @@ class OmnexFS(Operations):
                         return _file_stat(self._chunk_size(c))
             raise FuseOSError(errno.ENOENT)
 
-        # search/<query>
         if top == "search":
             if len(parts) == 2:
                 return _file_stat(len(self._run_search(parts[1])))
@@ -205,13 +274,11 @@ class OmnexFS(Operations):
         parts = [p for p in path.split("/") if p]
         entries = [".", ".."]
 
-        # Root
         if not parts:
             return entries + list(self._TOP)
 
         top = parts[0]
 
-        # Type dir listing
         if top in self._TYPE_MAP and len(parts) == 1:
             seen: set[str] = set()
             for c in _chunks_by_type(self._TYPE_MAP[top]):
@@ -221,27 +288,24 @@ class OmnexFS(Operations):
                     seen.add(name)
             return entries
 
-        # by_date/
+        if top == "drop" and len(parts) == 1:
+            return entries + [f.name for f in _STAGE_DIR.iterdir() if f.is_file()]
+
         if top == "by_date":
             if len(parts) == 1:
-                # List years
                 years = set()
                 for c in _all_chunks():
                     if c.get("created_at"):
                         years.add(str(c["created_at"].year))
                 return entries + sorted(years)
-
             if len(parts) == 2:
-                # List months for year
                 year = parts[1]
                 months = set()
                 for c in _all_chunks():
                     if c.get("created_at") and str(c["created_at"].year) == year:
                         months.add(f"{c['created_at'].month:02d}")
                 return entries + sorted(months)
-
             if len(parts) == 3:
-                # List files for year/month
                 seen = set()
                 for c in self._chunks_for_date(parts[1], parts[2]):
                     name = _safe_name(c["source_path"], str(c["_id"]), c.get("chunk_index", 0))
@@ -250,13 +314,16 @@ class OmnexFS(Operations):
                         seen.add(name)
                 return entries
 
-        # search/ — show cached queries as files
         if top == "search" and len(parts) == 1:
             return entries + list(self._search_cache.keys())
 
         return entries
 
-    # ── File reads ─────────────────────────────────────────────────────────────
+    def access(self, path: str, mode: int) -> None:
+        # Allow all access checks — permissions handled by stat mode bits
+        return
+
+    # ── Read ──────────────────────────────────────────────────────────────────
 
     def read(self, path: str, size: int, offset: int, fh) -> bytes:
         parts = [p for p in path.split("/") if p]
@@ -265,18 +332,114 @@ class OmnexFS(Operations):
 
         top = parts[0]
 
-        # search/<query> — run search and return text
         if top == "search":
             data = self._run_search(parts[1])
             return data[offset:offset + size]
 
-        # Type or by_date file — return binary or text
+        if top == "drop":
+            stage = _STAGE_DIR / parts[1]
+            if stage.exists():
+                with open(stage, "rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
+            raise FuseOSError(errno.ENOENT)
+
         chunk = self._find_chunk(parts)
         if chunk is None:
             raise FuseOSError(errno.ENOENT)
 
         data = self._read_chunk_data(chunk)
         return data[offset:offset + size]
+
+    # ── Write ─────────────────────────────────────────────────────────────────
+
+    def create(self, path: str, mode: int, fi=None) -> int:
+        parts = [p for p in path.split("/") if p]
+        if not parts or parts[0] not in self._WRITABLE:
+            raise FuseOSError(errno.EACCES)
+        if len(parts) != 2:
+            raise FuseOSError(errno.EACCES)
+
+        filename = parts[1]
+        stage_path = _STAGE_DIR / filename
+        stage_path.touch()
+
+        fh = self._next_fh
+        self._next_fh += 1
+        self._write_buffers[fh] = (stage_path, bytearray())
+        return fh
+
+    def write(self, path: str, data: bytes, offset: int, fh: int) -> int:
+        if fh not in self._write_buffers:
+            raise FuseOSError(errno.EBADF)
+        stage_path, buf = self._write_buffers[fh]
+        # Extend buffer if needed
+        if offset + len(data) > len(buf):
+            buf.extend(b"\x00" * (offset + len(data) - len(buf)))
+        buf[offset:offset + len(data)] = data
+        return len(data)
+
+    def release(self, path: str, fh: int) -> int:
+        if fh not in self._write_buffers:
+            return 0
+        stage_path, buf = self._write_buffers.pop(fh)
+        # Flush buffer to disk
+        with open(stage_path, "wb") as f:
+            f.write(bytes(buf))
+        log.info(f"FUSE write complete: {stage_path} ({len(buf)} bytes) — triggering ingestion")
+        _trigger_ingest(stage_path)
+        return 0
+
+    def truncate(self, path: str, length: int, fh: int = None) -> None:
+        # Called before write — just accept it
+        if fh and fh in self._write_buffers:
+            stage_path, buf = self._write_buffers[fh]
+            del buf[length:]
+        return
+
+    def utimens(self, path: str, times=None) -> None:
+        return  # Accept timestamp updates
+
+    def chmod(self, path: str, mode: int) -> None:
+        return  # Accept chmod calls
+
+    def chown(self, path: str, uid: int, gid: int) -> None:
+        return  # Accept chown calls
+
+    def mkdir(self, path: str, mode: int) -> None:
+        return  # Virtual dirs — always succeed
+
+    def rmdir(self, path: str) -> None:
+        return  # Virtual dirs — always succeed
+
+    # ── Delete ────────────────────────────────────────────────────────────────
+
+    def unlink(self, path: str) -> None:
+        parts = [p for p in path.split("/") if p]
+        if not parts:
+            raise FuseOSError(errno.EACCES)
+
+        top = parts[0]
+
+        # Delete from drop/ staging area
+        if top == "drop" and len(parts) == 2:
+            stage = _STAGE_DIR / parts[1]
+            if stage.exists():
+                stage.unlink()
+            return
+
+        # Delete from type directories — remove from index
+        if top in self._TYPE_MAP and len(parts) == 2:
+            filename = parts[1]
+            chunks = _chunks_by_type(self._TYPE_MAP[top])
+            for c in chunks:
+                name = _safe_name(c["source_path"], str(c["_id"]), c.get("chunk_index", 0))
+                if name == filename:
+                    _delete_chunks_for_source(c["source_path"])
+                    return
+            raise FuseOSError(errno.ENOENT)
+
+        raise FuseOSError(errno.EACCES)
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -338,7 +501,6 @@ class OmnexFS(Operations):
     def _run_search(self, query: str) -> bytes:
         if query in self._search_cache:
             return self._search_cache[query]
-
         try:
             import asyncio
             from api.query_engine import search
@@ -354,7 +516,6 @@ class OmnexFS(Operations):
             data = "\n".join(lines).encode()
         except Exception as e:
             data = f"Search error: {e}\n".encode()
-
         self._search_cache[query] = data
         return data
 
@@ -370,7 +531,7 @@ def main():
 
     mount = args.mount
     Path(mount).mkdir(parents=True, exist_ok=True)
-    log.info(f"Mounting Omnex at {mount}")
+    log.info(f"Mounting Omnex at {mount} (read-write)")
 
     FUSE(
         OmnexFS(),
@@ -378,7 +539,7 @@ def main():
         nothreads=True,
         foreground=args.foreground,
         allow_other=True,
-        ro=True,
+        ro=False,
     )
 
 

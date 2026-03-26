@@ -338,38 +338,27 @@ def ingest_file(path: Path) -> dict:
 
 
 def run(source_path: Path, workers: int = 4, cancel_event=None) -> None:
-    import sys
-    size = source_path.stat().st_size if source_path.exists() else -1
-    print(f"[run] source_path={source_path} exists={source_path.exists()} size={size}", flush=True, file=sys.stderr)
     logger.info(f"Omnex ingestion starting — source: {source_path}")
 
     files = collect_files(source_path)
     total = len(files)
-    print(f"[run] collect_files found {total} files", flush=True, file=sys.stderr)
 
     if total == 0:
         logger.info("No indexable files found.")
-        print(f"[run] returning early — no indexable files at {source_path}", flush=True, file=sys.stderr)
         return
 
     logger.info(f"Found {total:,} files to process")
 
-    print(f"[run] calling upsert_ingestion_state for {source_path}", flush=True, file=sys.stderr)
-    try:
-        upsert_ingestion_state(str(source_path), {
-            "source_path": str(source_path),
-            "total_files": total,
-            "processed": 0,
-            "indexed": 0,
-            "skipped": 0,
-            "errors": 0,
-            "started_at": datetime.now(timezone.utc),
-            "status": "running",
-        })
-        print(f"[run] upsert_ingestion_state OK", flush=True, file=sys.stderr)
-    except Exception as e:
-        print(f"[run] upsert_ingestion_state FAILED: {e}", flush=True, file=sys.stderr)
-        raise
+    upsert_ingestion_state(str(source_path), {
+        "source_path": str(source_path),
+        "total_files": total,
+        "processed": 0,
+        "indexed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "started_at": datetime.now(timezone.utc),
+        "status": "running",
+    })
 
     processed = indexed = skipped = errors = 0
 

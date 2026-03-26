@@ -120,6 +120,23 @@ html, body {
   animation: dataStream 2s ease-in-out infinite;
 }
 
+/* Markdown prose */
+.md-prose p              { margin-bottom: 0.6em; }
+.md-prose p:last-child   { margin-bottom: 0; }
+.md-prose strong         { color: var(--text); font-weight: 600; }
+.md-prose em             { color: var(--text-2); font-style: italic; }
+.md-prose h1, .md-prose h2, .md-prose h3 { color: var(--text); font-weight: 600; margin: 0.8em 0 0.4em; }
+.md-prose h1             { font-size: 1.1em; }
+.md-prose h2             { font-size: 1em; }
+.md-prose h3             { font-size: 0.95em; }
+.md-prose ul, .md-prose ol { padding-left: 1.4em; margin-bottom: 0.6em; }
+.md-prose li             { margin-bottom: 0.2em; }
+.md-prose code           { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: rgba(124,106,247,0.1); color: var(--accent-2); padding: 1px 5px; border-radius: 3px; }
+.md-prose pre            { background: rgba(10,10,15,0.9); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 0.6em 0; overflow-x: auto; }
+.md-prose pre code        { background: none; padding: 0; color: var(--text-2); font-size: 0.82em; }
+.md-prose blockquote     { border-left: 2px solid var(--accent); padding-left: 10px; color: var(--muted); margin: 0.6em 0; }
+.md-prose a              { color: var(--accent-2); text-decoration: underline; text-underline-offset: 2px; }
+
 /* Hex grid background pattern */
 .hex-pattern {
   background-image:

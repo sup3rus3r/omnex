@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   FolderOpen, HardDrive, File, CheckCircle2, AlertCircle,
   Loader2, ArrowRight, Zap, Database, Image, Video, Music,
-  FileText, Code2, Activity, Upload, StopCircle
+  FileText, Code2, Activity, Upload, StopCircle, Trash2, ChevronDown, ChevronRight
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
@@ -489,6 +489,9 @@ export default function IngestionPanel({ onDone }: Props) {
                 </p>
               </div>
             )}
+
+            {/* Indexed sources manager */}
+            <IndexedSources api={API} />
           </motion.div>
         </div>
       </div>
@@ -504,4 +507,118 @@ function TypeIcon({ type }: { type: string }) {
   if (type === 'document') return <FileText size={11} style={style} />
   if (type === 'code')     return <Code2    size={11} style={style} />
   return <File size={11} style={style} />
+}
+
+/* ── Indexed Sources Manager ──────────────────────────────────────────────── */
+function IndexedSources({ api }: { api: string }) {
+  const [open,     setOpen]     = useState(false)
+  const [sources,  setSources]  = useState<{source_path: string, count: number, status: string}[]>([])
+  const [loading,  setLoading]  = useState(false)
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const res  = await fetch(`${api}/ingest/status`)
+      const data = await res.json()
+      // Also get chunk counts per source
+      const statsRes  = await fetch(`${api}/stats`)
+      const statsData = await statsRes.json()
+
+      const ingestion: any[] = data.ingestion || []
+      setSources(ingestion.map((r: any) => ({
+        source_path: r.source_path,
+        count:       r.indexed || 0,
+        status:      r.status  || 'unknown',
+      })))
+    } catch {}
+    setLoading(false)
+  }
+
+  async function deleteSource(sourcePath: string) {
+    if (!confirm(`Remove all indexed data from:\n${sourcePath}\n\nThis cannot be undone.`)) return
+    setDeleting(sourcePath)
+    try {
+      const res = await fetch(`${api}/ingest/source?source_path=${encodeURIComponent(sourcePath)}`, { method: 'DELETE' })
+      if (res.ok) setSources(s => s.filter(x => x.source_path !== sourcePath))
+    } catch {}
+    setDeleting(null)
+  }
+
+  function toggle() {
+    if (!open) load()
+    setOpen(o => !o)
+  }
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <button
+        onClick={toggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          padding: '10px 0', color: '#505068', fontSize: 11,
+          letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'inherit',
+        }}
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        Manage indexed sources
+      </button>
+
+      {open && (
+        <div style={{ border: '1px solid #1a1a2e', borderRadius: 10, overflow: 'hidden' }}>
+          {loading ? (
+            <div style={{ padding: '16px', fontSize: 12, color: '#505068', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> Loading…
+            </div>
+          ) : sources.length === 0 ? (
+            <div style={{ padding: '16px', fontSize: 12, color: '#383850', textAlign: 'center' }}>
+              No ingestion records found.
+            </div>
+          ) : (
+            sources.map((s, i) => (
+              <div
+                key={s.source_path}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 14px',
+                  borderBottom: i < sources.length - 1 ? '1px solid #1a1a2e' : 'none',
+                  background: 'rgba(10,10,15,0.6)',
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'JetBrains Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {s.source_path}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#505068', marginTop: 2 }}>
+                    {s.count.toLocaleString()} chunks · {s.status}
+                  </div>
+                </div>
+                <button
+                  onClick={() => deleteSource(s.source_path)}
+                  disabled={deleting === s.source_path}
+                  title="Remove from index"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 4,
+                    padding: '5px 10px', borderRadius: 6, flexShrink: 0,
+                    background: 'rgba(248,113,113,0.06)',
+                    border: '1px solid rgba(248,113,113,0.15)',
+                    color: deleting === s.source_path ? '#383850' : '#f87171',
+                    fontSize: 11, cursor: deleting === s.source_path ? 'not-allowed' : 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {deleting === s.source_path
+                    ? <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                    : <Trash2 size={11} />
+                  }
+                  Remove
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
 }

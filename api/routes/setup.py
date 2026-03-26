@@ -98,9 +98,14 @@ async def tunnel_status():
 @router.get("/config")
 async def public_config():
     """Return public configuration the UI needs to know about."""
+    import os
     from api.auth import api_key_enabled
     return {
         "auth_enabled": api_key_enabled(),
+        "gpu_enabled":  os.getenv("GPU_ENABLED", "false").lower() == "true",
+        "llm_provider": os.getenv("LLM_PROVIDER", "local"),
+        "tts_kokoro_voice": os.getenv("TTS_KOKORO_VOICE", "af_heart"),
+        "tts_qwen_voice":   os.getenv("TTS_QWEN_VOICE", "Ryan"),
     }
 
 

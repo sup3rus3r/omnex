@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Brain, Database, Users, Clock, Settings, Mic, MicOff, ArrowUp, Loader2, X, ChevronRight, Zap, HardDrive, FileText, Image, Video, Music, Code2, File, Sparkles, Activity, Search, FolderOpen, Volume2 } from 'lucide-react'
+import { Brain, Database, Users, Clock, Settings, Mic, ArrowUp, Loader2, X, ChevronRight, Zap, FileText, Image, Video, Music, Code2, Search } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import ResultGrid from '@/components/ResultGrid/ResultGrid'
 import PreviewPane from '@/components/PreviewPane/PreviewPane'
 import IngestionPanel from '@/components/IngestionPanel/IngestionPanel'
@@ -28,7 +29,7 @@ export interface QueryResponse {
   session_id:            string | null
 }
 
-type NavView = 'recall' | 'ingest' | 'people' | 'timeline' | 'remote'
+type NavView = 'recall' | 'ingest' | 'people' | 'timeline' | 'remote' | 'settings'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -70,15 +71,26 @@ export default function Home() {
   const [voiceSupport,  setVoiceSupport]  = useState(false)
   const [ttsSupport,    setTtsSupport]    = useState(false)
   const [ttsEnabled,    setTtsEnabled]    = useState(false)
+  const [isSpeaking,    setIsSpeaking]    = useState(false)
+  const [alwaysListen,  setAlwaysListen]  = useState(false)
+  const [micLevel,      setMicLevel]      = useState(0)   // 0-1 amplitude
+  const mediaRecorderRef  = useRef<MediaRecorder | null>(null)
+  const audioChunksRef    = useRef<Blob[]>([])
+  const analyserRef       = useRef<AnalyserNode | null>(null)
+  const micStreamRef      = useRef<MediaStream | null>(null)
+  const vadTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const vadActiveRef      = useRef(false)
+  const alwaysListenRef   = useRef(false)
   const [stats,         setStats]         = useState<IndexStats | null>(null)
   const [apiReady,      setApiReady]      = useState<boolean | null>(null)
   const [focused,       setFocused]       = useState(false)
   const [sessionId,     setSessionId]     = useState<string | null>(null)
   const [streamingText, setStreamingText] = useState('')
+  const [ingestToast,   setIngestToast]   = useState<{path: string, pct: number} | null>(null)
+  const [expandNudge,   setExpandNudge]   = useState(false)
+  const [nudgeDismissed, setNudgeDismissed] = useState(false)
   const inputRef       = useRef<HTMLTextAreaElement>(null)
-  const recognRef      = useRef<any>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const ttsRef         = useRef<SpeechSynthesisUtterance | null>(null)
+const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
   const [apiKey, setApiKey] = useState<string | null>(null)
@@ -130,13 +142,11 @@ export default function Home() {
         }
       })
 
-    const hasSpeechRec = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
-    setVoiceSupport(hasSpeechRec)
+    const hasMediaRecorder = 'MediaRecorder' in window && 'mediaDevices' in navigator
+    setVoiceSupport(hasMediaRecorder)
 
-    const hasTts = 'speechSynthesis' in window
-    setTtsSupport(hasTts)
-    // Default TTS on if available
-    if (hasTts) setTtsEnabled(true)
+    setTtsSupport(true)
+    setTtsEnabled(false)
   }, [])
 
   // Fetch stats on mount + poll every 10s to keep connection indicator live
@@ -156,8 +166,9 @@ export default function Home() {
       if (!res.ok) { setApiReady(false); return }
       const data = await res.json()
       setApiReady(true)
+      const total = data.total_chunks || 0
       setStats({
-        total:     data.total_chunks       || 0,
+        total,
         images:    data.by_type?.image     || 0,
         documents: data.by_type?.document  || 0,
         videos:    data.by_type?.video     || 0,
@@ -171,17 +182,48 @@ export default function Home() {
           if (typeof d.ready === 'boolean') setSetupDone(d.ready)
         })
         .catch(() => {})
+
+      // Poll active ingestion for toast
+      apiFetch(`${API}/ingest/status`)
+        .then(r => r.json())
+        .then(d => {
+          const active = (d.ingestion || []).find((r: any) => r.status === 'running' || r.status === 'processing')
+          if (active && active.total_files > 0) {
+            const pct = Math.round((active.processed / active.total_files) * 100)
+            const name = active.source_path?.split(/[/\\]/).pop() || active.source_path
+            setIngestToast({ path: name, pct })
+          } else {
+            setIngestToast(null)
+            // Show drive expansion nudge if index has something but looks like just one folder
+            if (total > 0 && total < 5000 && !nudgeDismissed) {
+              setExpandNudge(true)
+            }
+          }
+        })
+        .catch(() => {})
     } catch { setApiReady(false) }
   }
 
-  const speakText = useCallback((text: string) => {
-    if (!ttsEnabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return
-    window.speechSynthesis.cancel()
-    const utt = new SpeechSynthesisUtterance(text)
-    utt.rate  = 1.0
-    utt.pitch = 1.0
-    ttsRef.current = utt
-    window.speechSynthesis.speak(utt)
+  const speakText = useCallback(async (text: string) => {
+    if (!ttsEnabled) return
+    try {
+      const res = await apiFetch(`${API}/voice/speak`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ text }),
+      })
+      if (!res.ok) return
+      const blob = await res.blob()
+      const url  = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      setIsSpeaking(true)
+      audio.onended = () => { setIsSpeaking(false); URL.revokeObjectURL(url) }
+      audio.onerror = () => { setIsSpeaking(false); URL.revokeObjectURL(url) }
+      audio.play()
+    } catch (e) {
+      console.warn('TTS failed:', e)
+      setIsSpeaking(false)
+    }
   }, [ttsEnabled])
 
   async function handleQuery(query: string) {
@@ -227,36 +269,38 @@ export default function Home() {
         timestamp:   new Date(),
       }])
 
-      // Stream LLM response via /api/chat — always, even with no results
+      // Use backend LLM response if available (already filtered + answered)
+      // Fall back to /api/chat stream only for pure conversation (no search results)
       {
-        const context = data.results?.length
-          ? data.results.slice(0, 5).map((r, i) =>
-              `[${i + 1}] ${r.file_type.toUpperCase()} — ${r.source_path}\n${(r.text || '').slice(0, 400)}`
-            ).join('\n\n')
-          : ''
-
         setLlmLoading(true)
         let fullText = ''
 
-        const chatRes = await fetch('/api/chat', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ query, context, messages: history }),
-        })
+        if (data.llm_response) {
+          // Backend already did LLM filtering — use that response directly
+          fullText = data.llm_response
+          setStreamingText(fullText)
+        } else {
+          // Pure conversation — stream via /api/chat
+          const chatRes = await fetch('/api/chat', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ query, context: '', messages: history }),
+          })
 
-        const reader = chatRes.body?.getReader()
-        const decoder = new TextDecoder()
+          const reader = chatRes.body?.getReader()
+          const decoder = new TextDecoder()
 
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            fullText += decoder.decode(value, { stream: true })
-            setStreamingText(fullText)
+          if (reader) {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              fullText += decoder.decode(value, { stream: true })
+              setStreamingText(fullText)
+            }
           }
         }
 
-        // Finalize: write streamed text into last assistant message
+        // Finalize: write text into last assistant message
         setMessages((m) => {
           const updated = [...m]
           const lastIdx = updated.map((msg, i) => msg.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
@@ -289,25 +333,159 @@ export default function Home() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
   }
 
-  function toggleVoice() {
-    if (listening) { recognRef.current?.stop(); setListening(false); return }
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    const recog: any = new SR()
-    recog.lang = 'en-US'
-    recog.interimResults = true
-    recog.continuous = false
-    recog.onresult = (e: any) => {
-      setInput(Array.from(e.results).map((r: any) => r[0].transcript).join(''))
+  // Start mic stream + level analyser (shared between push-to-talk and always-listen)
+  async function _startMicStream(): Promise<MediaStream | null> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      micStreamRef.current = stream
+
+      // Hook up Web Audio analyser for level meter
+      const ctx = new AudioContext()
+      const source = ctx.createMediaStreamSource(stream)
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      analyserRef.current = analyser
+
+      // Animate mic level
+      const buf = new Uint8Array(analyser.frequencyBinCount)
+      const tick = () => {
+        if (!analyserRef.current) return
+        analyserRef.current.getByteTimeDomainData(buf)
+        let sum = 0
+        for (let i = 0; i < buf.length; i++) sum += Math.abs(buf[i] - 128)
+        setMicLevel(Math.min(sum / buf.length / 64, 1))
+        requestAnimationFrame(tick)
+      }
+      tick()
+      return stream
+    } catch (e) {
+      console.warn('Microphone access denied:', e)
+      return null
     }
-    recog.onend = () => {
+  }
+
+  function _stopMicStream() {
+    micStreamRef.current?.getTracks().forEach(t => t.stop())
+    micStreamRef.current = null
+    analyserRef.current = null
+    setMicLevel(0)
+  }
+
+  // Pick best supported audio MIME type once
+  function _mimeType() {
+    return ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find(
+      (m) => MediaRecorder.isTypeSupported(m)
+    ) || ''
+  }
+
+  // Send recorded blob to Whisper and run the query
+  async function _transcribeAndQuery(blob: Blob) {
+    if (blob.size < 1000) return
+    const formData = new FormData()
+    formData.append('audio', blob, 'recording.webm')
+    try {
+      const res = await apiFetch(`${API}/voice/transcribe`, { method: 'POST', body: formData })
+      if (!res.ok) return
+      const data = await res.json()
+      const text = (data.text || '').trim()
+      if (text) { setInput(text); setTimeout(() => handleQuery(text), 200) }
+    } catch {}
+  }
+
+  // Push-to-talk: click to start, click again to stop
+  async function startPushToTalk() {
+    if (listening) {
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    const stream = await _startMicStream()
+    if (!stream) return
+
+    const mime = _mimeType()
+    audioChunksRef.current = []
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+    mediaRecorderRef.current = recorder
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+    recorder.onstop = async () => {
+      _stopMicStream()
       setListening(false)
-      const q = inputRef.current?.value.trim()
-      if (q) handleQuery(q)
+      const blob = new Blob(audioChunksRef.current, { type: mime || 'audio/webm' })
+      await _transcribeAndQuery(blob)
+      if (alwaysListenRef.current) setTimeout(startVADLoop, 1500)
     }
-    recog.onerror = () => setListening(false)
-    recognRef.current = recog
-    recog.start()
+    recorder.start()
     setListening(true)
+  }
+
+  // VAD loop: always-listen mode — auto-detect speech, record, transcribe, repeat
+  async function startVADLoop() {
+    if (!alwaysListenRef.current) return
+    const stream = await _startMicStream()
+    if (!stream) return
+
+    const mime = _mimeType()
+    audioChunksRef.current = []
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+    mediaRecorderRef.current = recorder
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+    recorder.onstop = async () => {
+      _stopMicStream()
+      setListening(false)
+      const blob = new Blob(audioChunksRef.current, { type: mime || 'audio/webm' })
+      await _transcribeAndQuery(blob)
+      if (alwaysListenRef.current) setTimeout(startVADLoop, 1200)
+    }
+
+    const buf = new Uint8Array(analyserRef.current?.frequencyBinCount ?? 128)
+    let speaking = false
+    let silenceFrames = 0
+    const THRESHOLD = 0.025
+    const SILENCE_FRAMES = 45  // ~0.75s at 60fps
+
+    const detect = () => {
+      if (!alwaysListenRef.current || !analyserRef.current) {
+        if (recorder.state === 'recording') recorder.stop()
+        return
+      }
+      analyserRef.current.getByteTimeDomainData(buf)
+      let sum = 0
+      for (let i = 0; i < buf.length; i++) sum += Math.abs(buf[i] - 128)
+      const level = sum / buf.length / 128
+
+      if (level > THRESHOLD) {
+        silenceFrames = 0
+        if (!speaking && recorder.state === 'inactive') {
+          speaking = true
+          audioChunksRef.current = []
+          recorder.start(100)
+          setListening(true)
+        }
+      } else if (speaking) {
+        silenceFrames++
+        if (silenceFrames > SILENCE_FRAMES) {
+          speaking = false
+          silenceFrames = 0
+          if (recorder.state === 'recording') { recorder.stop(); return }
+        }
+      }
+      requestAnimationFrame(detect)
+    }
+    requestAnimationFrame(detect)
+  }
+
+  // Toggle always-listen (called from MicOrb long-press)
+  async function toggleAlwaysListen() {
+    const next = !alwaysListenRef.current
+    alwaysListenRef.current = next
+    setAlwaysListen(next)
+    if (next) {
+      startVADLoop()
+    } else {
+      mediaRecorderRef.current?.stop()
+      _stopMicStream()
+      setListening(false)
+    }
   }
 
   // The last assistant message index for streaming
@@ -357,13 +535,13 @@ export default function Home() {
         <nav style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
           <NavItem icon={<Search size={14} />} label="Recall" active={view === 'recall'} onClick={() => setView('recall')} />
           <NavItem icon={<Database size={14} />} label="Ingest" active={view === 'ingest'} onClick={() => setView('ingest')} />
-          <NavItem icon={<Users size={14} />} label="People" active={view === 'people'} onClick={() => { setView('people'); setShowIdentity(true) }} />
-          <NavItem icon={<Clock size={14} />} label="Timeline" active={view === 'timeline'} onClick={() => setView('timeline')} badge="soon" />
+          <NavItem icon={<Users size={14} />} label="People" active={view === 'people'} onClick={() => setView('people')} />
+          <NavItem icon={<Clock size={14} />} label="Timeline" active={view === 'timeline'} onClick={() => setView('timeline')} />
           <NavItem icon={<Zap size={14} />} label="Remote Access" active={view === 'remote'} onClick={() => setView('remote' as NavView)} />
 
           <div style={{ margin: '8px 0', borderTop: '1px solid #1a1a2e' }} />
 
-          <NavItem icon={<Settings size={14} />} label="Settings" active={false} onClick={() => {}} />
+          <NavItem icon={<Settings size={14} />} label="Settings" active={view === 'settings'} onClick={() => setView('settings')} />
         </nav>
 
         {/* Index stats panel */}
@@ -462,6 +640,17 @@ export default function Home() {
               <IngestionPanel onDone={() => { setView('recall'); fetchStats() }} />
             </motion.div>
 
+          ) : view === 'people' ? (
+            /* ── PEOPLE VIEW ──────────────────────────────────────── */
+            <motion.div
+              key="people"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              style={{ flex: 1, overflow: 'auto', padding: '32px 32px', position: 'relative', zIndex: 1 }}
+            >
+              <PeoplePanel api={API} />
+            </motion.div>
+
           ) : view === 'recall' ? (
             /* ── RECALL VIEW ──────────────────────────────────────── */
             <motion.div
@@ -511,167 +700,9 @@ export default function Home() {
 
                     {/* Empty state */}
                     {messages.length === 0 && (
-                      <div style={{
-                        minHeight: '100%', width: '100%', display: 'flex', flexDirection: 'column',
-                        alignItems: 'center', justifyContent: 'center',
-                        padding: '32px 48px 24px', position: 'relative', boxSizing: 'border-box',
-                      }}>
-                        {/* Ambient glow behind everything */}
-                        <div style={{
-                          position: 'absolute', top: '20%', left: '50%', transform: 'translateX(-50%)',
-                          width: 500, height: 300, pointerEvents: 'none',
-                          background: 'radial-gradient(ellipse, rgba(124,106,247,0.08) 0%, transparent 70%)',
-                          filter: 'blur(40px)',
-                        }} />
-                        {/* Fine grid */}
-                        <div style={{
-                          position: 'absolute', inset: 0, pointerEvents: 'none',
-                          backgroundImage: 'linear-gradient(rgba(124,106,247,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(124,106,247,0.02) 1px, transparent 1px)',
-                          backgroundSize: '56px 56px',
-                          maskImage: 'radial-gradient(ellipse 80% 70% at 50% 40%, black, transparent)',
-                        }} />
-
-                        {/* Orbital animation */}
-                        <div style={{ position: 'relative', marginBottom: 32, width: 110, height: 110, flexShrink: 0 }}>
-                          <motion.div
-                            animate={{ rotate: 360 }}
-                            transition={{ duration: 36, repeat: Infinity, ease: 'linear' }}
-                            style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px dashed rgba(124,106,247,0.12)' }}
-                          >
-                            <div style={{
-                              position: 'absolute', top: -3, left: '50%', marginLeft: -3,
-                              width: 6, height: 6, borderRadius: '50%', background: '#7c6af7',
-                              boxShadow: '0 0 8px #7c6af7, 0 0 18px rgba(124,106,247,0.5)',
-                            }} />
-                          </motion.div>
-                          <motion.div
-                            animate={{ rotate: -360 }}
-                            transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
-                            style={{ position: 'absolute', inset: 18, borderRadius: '50%', border: '1px solid rgba(96,165,250,0.1)' }}
-                          >
-                            <div style={{
-                              position: 'absolute', bottom: -2, left: '50%', marginLeft: -2,
-                              width: 4, height: 4, borderRadius: '50%', background: '#60a5fa',
-                              boxShadow: '0 0 6px #60a5fa',
-                            }} />
-                          </motion.div>
-                          <motion.div
-                            animate={{ boxShadow: [
-                              '0 0 28px rgba(124,106,247,0.22), 0 0 56px rgba(124,106,247,0.07)',
-                              '0 0 52px rgba(124,106,247,0.48), 0 0 90px rgba(124,106,247,0.14)',
-                              '0 0 28px rgba(124,106,247,0.22), 0 0 56px rgba(124,106,247,0.07)',
-                            ]}}
-                            transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
-                            style={{
-                              position: 'absolute', inset: 30, borderRadius: '50%',
-                              background: 'radial-gradient(circle at 35% 30%, rgba(192,168,255,0.28) 0%, rgba(124,106,247,0.1) 50%, rgba(5,5,7,0.9) 100%)',
-                              border: '1px solid rgba(124,106,247,0.38)',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }}
-                          >
-                            <Brain size={18} color="#c4b5fd" strokeWidth={1.2} />
-                          </motion.div>
-                        </div>
-
-                        {/* Wordmark */}
-                        <motion.div
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          transition={{ delay: 0, duration: 0.5 }}
-                          style={{
-                            fontSize: 10, letterSpacing: '0.4em', textTransform: 'uppercase',
-                            color: 'rgba(124,106,247,0.4)', fontWeight: 600, marginBottom: 24,
-                          }}
-                        >
-                          Memory that thinks. Data that speaks.
-                        </motion.div>
-
-                        {/* Headline */}
-                        <motion.div
-                          initial={{ opacity: 0, y: 20 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.1, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-                          style={{ textAlign: 'center', marginBottom: 18, width: '100%', maxWidth: 580 }}
-                        >
-                          <h1 style={{
-                            fontSize: 'clamp(2rem, 3.5vw, 3.4rem)',
-                            fontWeight: 900, letterSpacing: '-0.05em', lineHeight: 1.08, margin: 0,
-                          }}>
-                            {/* <span style={{ color: '#e8e8f4' }}>Everything you know,</span><br />
-                            <span style={{
-                              background: 'linear-gradient(110deg, #c4b5fd 0%, #a78bfa 40%, #60a5fa 100%)',
-                              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', display: 'inline',
-                            }}>
-                              always within reach.
-                            </span> */}
-                          </h1>
-                        </motion.div>
-
-                        {/* Sub */}
-                        <motion.p
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          transition={{ delay: 0.3, duration: 0.6 }}
-                          style={{
-                            fontSize: 14, color: '#40405e', textAlign: 'center',
-                            lineHeight: 1.8, maxWidth: 420, marginBottom: 40, letterSpacing: '-0.01em',
-                          }}
-                        >
-                          Every photo, file, recording, and thought — indexed by meaning.<br />
-                          <span style={{ color: '#54547a' }}>Ask anything. In plain English. Right now.</span>
-                        </motion.p>
-
-                        {/* Suggestion chips */}
-                        <motion.div
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.35, duration: 0.5 }}
-                          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', maxWidth: 540 }}
-                        >
-                          {[
-                            'Photos from last summer',
-                            'Show me everything from last week',
-                            'That meeting about the product launch',
-                            'All my invoices and receipts',
-                            'Code that handles authentication',
-                          ].map((s, i) => (
-                            <motion.button
-                              key={s}
-                              initial={{ opacity: 0, scale: 0.95 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              transition={{ delay: 0.4 + i * 0.06, duration: 0.3 }}
-                              whileHover={{ scale: 1.03, y: -2 }}
-                              whileTap={{ scale: 0.97 }}
-                              onClick={() => handleQuery(s)}
-                              style={{
-                                padding: '8px 16px', borderRadius: 22,
-                                border: '1px solid rgba(37,37,64,0.9)',
-                                background: 'rgba(10,10,20,0.7)',
-                                color: '#7070a0', fontSize: 12,
-                                cursor: 'pointer', fontFamily: 'inherit',
-                                transition: 'all 0.15s',
-                                backdropFilter: 'blur(8px)',
-                              }}
-                              onMouseEnter={(e) => {
-                                const b = e.currentTarget as HTMLButtonElement
-                                b.style.borderColor = 'rgba(124,106,247,0.5)'
-                                b.style.color = '#e8e8f0'
-                                b.style.background = 'rgba(124,106,247,0.08)'
-                                b.style.boxShadow = '0 0 16px rgba(124,106,247,0.1)'
-                              }}
-                              onMouseLeave={(e) => {
-                                const b = e.currentTarget as HTMLButtonElement
-                                b.style.borderColor = 'rgba(37,37,64,0.9)'
-                                b.style.color = '#7070a0'
-                                b.style.background = 'rgba(10,10,20,0.7)'
-                                b.style.boxShadow = 'none'
-                              }}
-                            >
-                              {s}
-                            </motion.button>
-                          ))}
-                        </motion.div>
-                      </div>
+                      stats?.total === 0
+                        ? <EmptyIndexState onIngest={() => setView('ingest')} />
+                        : <ReadyState stats={stats} onQuery={handleQuery} />
                     )}
 
                     {/* Message thread */}
@@ -732,10 +763,10 @@ export default function Home() {
                                           </div>
                                         )}
                                       </div>
-                                      <p style={{ fontSize: 14, lineHeight: 1.7, color: '#e8e8f0' }}>
-                                        {streamingText}
+                                      <div style={{ fontSize: 14, lineHeight: 1.7, color: '#e8e8f0' }} className="md-prose">
+                                        <ReactMarkdown>{streamingText}</ReactMarkdown>
                                         {llmLoading && <span style={{ display: 'inline-block', width: 2, height: 14, background: '#7c6af7', marginLeft: 2, verticalAlign: 'middle', animation: 'blink 1s step-end infinite' }} />}
-                                      </p>
+                                      </div>
                                     </div>
                                   ) : msg.content ? (
                                     <div style={{
@@ -744,22 +775,15 @@ export default function Home() {
                                       borderRadius: '4px 16px 16px 16px',
                                       padding: '12px 16px',
                                     }}>
-                                      <p style={{ fontSize: 14, lineHeight: 1.7, color: '#e8e8f0' }}>{msg.content}</p>
+                                      <div style={{ fontSize: 14, lineHeight: 1.7, color: '#e8e8f0' }} className="md-prose">
+                                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                      </div>
                                     </div>
                                   ) : null}
 
-                                  {/* Results */}
+                                  {/* Results — collapsed by default, expandable */}
                                   {msg.results && msg.results.length > 0 && (
-                                    <div>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                                        <div style={{ height: 1, flex: 1, background: '#1a1a2e' }} />
-                                        <span style={{ fontSize: 10, color: '#505068', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-                                          {msg.total} result{msg.total !== 1 ? 's' : ''}
-                                        </span>
-                                        <div style={{ height: 1, flex: 1, background: '#1a1a2e' }} />
-                                      </div>
-                                      <ResultGrid results={msg.results} onSelect={setSelectedChunk} selected={selectedChunk} />
-                                    </div>
+                                    <ExpandableResults results={msg.results} total={msg.total ?? 0} onSelect={setSelectedChunk} selected={selectedChunk} />
                                   )}
 
                                   {/* Refinement pills */}
@@ -832,14 +856,15 @@ export default function Home() {
                         loading={loading}
                         listening={listening}
                         voiceSupport={voiceSupport}
-                        onVoice={toggleVoice}
+                        onVoice={startPushToTalk}
                         inputRef={inputRef}
                         ttsSupport={ttsSupport}
                         ttsEnabled={ttsEnabled}
-                        onTtsToggle={() => {
-                          setTtsEnabled(v => !v)
-                          if (ttsEnabled) window.speechSynthesis?.cancel()
-                        }}
+                        onTtsToggle={() => setTtsEnabled(v => !v)}
+                        isSpeaking={isSpeaking}
+                        micLevel={micLevel}
+                        alwaysListen={alwaysListen}
+                        onAlwaysListen={toggleAlwaysListen}
                       />
                     </div>
                   </div>
@@ -859,7 +884,35 @@ export default function Home() {
                         overflow: 'hidden',
                       }}
                     >
-                      <PreviewPane chunk={selectedChunk} onClose={() => setSelectedChunk(null)} />
+                      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                        <div style={{ padding: '10px 12px', borderBottom: '1px solid #1a1a2e', display: 'flex', justifyContent: 'flex-end' }}>
+                          <button
+                            onClick={async () => {
+                              if (!selectedChunk) return
+                              if (!confirm('Remove this item from your memory index?')) return
+                              const res = await apiFetch(`${API}/ingest/chunk/${selectedChunk.chunk_id}`, { method: 'DELETE' })
+                              if (res.ok) {
+                                setMessages(m => m.map(msg => ({
+                                  ...msg,
+                                  results: msg.results?.filter(r => r.chunk_id !== selectedChunk.chunk_id)
+                                })))
+                                setSelectedChunk(null)
+                              }
+                            }}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              padding: '5px 10px', borderRadius: 6,
+                              background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)',
+                              color: '#f87171', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
+                            }}
+                          >
+                            <X size={11} /> Remove from index
+                          </button>
+                        </div>
+                        <div style={{ flex: 1, overflow: 'hidden' }}>
+                          <PreviewPane chunk={selectedChunk} onClose={() => setSelectedChunk(null)} />
+                        </div>
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -867,18 +920,14 @@ export default function Home() {
             </motion.div>
 
           ) : view === 'timeline' ? (
-            /* ── TIMELINE (coming soon) ─────────────────────────── */
+            /* ── TIMELINE ────────────────────────────────────────── */
             <motion.div
               key="timeline"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', zIndex: 1 }}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              style={{ flex: 1, overflow: 'auto', padding: '32px 32px', position: 'relative', zIndex: 1 }}
             >
-              <div style={{ textAlign: 'center' }}>
-                <Clock size={40} color="#252540" strokeWidth={1} style={{ marginBottom: 16 }} />
-                <p style={{ fontSize: 14, color: '#383850', marginBottom: 6 }}>Timeline view coming soon</p>
-                <p style={{ fontSize: 12, color: '#252540' }}>Your memories, organized by time and place.</p>
-              </div>
+              <TimelinePanel api={API} onSelect={setSelectedChunk} selected={selectedChunk} />
             </motion.div>
 
           ) : view === 'remote' ? (
@@ -892,6 +941,17 @@ export default function Home() {
               <RemoteAccessPanel api={API} />
             </motion.div>
 
+          ) : view === 'settings' ? (
+            /* ── SETTINGS ────────────────────────────────────────── */
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              style={{ flex: 1, overflow: 'auto', padding: '32px 32px', position: 'relative', zIndex: 1 }}
+            >
+              <SettingsPanel api={API} />
+            </motion.div>
+
           ) : null}
         </AnimatePresence>
       </div>
@@ -902,6 +962,437 @@ export default function Home() {
           <IdentityManager onClose={() => { setShowIdentity(false); setView('recall') }} />
         )}
       </AnimatePresence>
+    </div>
+  )
+}
+
+/* ── Timeline Panel ─────────────────────────────────────────────────────────── */
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const TYPE_ICONS: Record<string, React.ReactNode> = {
+  image: <Image size={11} />, video: <Video size={11} />, audio: <Music size={11} />,
+  document: <FileText size={11} />, code: <Code2 size={11} />,
+}
+
+function TimelinePanel({ api, onSelect, selected }: { api: string, onSelect: (c: any) => void, selected: any }) {
+  const [years,    setYears]    = useState<{year: number, count: number}[]>([])
+  const [selYear,  setSelYear]  = useState<number | null>(null)
+  const [months,   setMonths]   = useState<{month: number, count: number, types: string[]}[]>([])
+  const [selMonth, setSelMonth] = useState<number | null>(null)
+  const [chunks,   setChunks]   = useState<any[]>([])
+  const [total,    setTotal]    = useState(0)
+  const [page,     setPage]     = useState(1)
+  const [loading,  setLoading]  = useState(false)
+  const [typeFilter, setTypeFilter] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`${api}/timeline/years`).then(r => r.json()).then(d => {
+      setYears(d)
+      if (d.length > 0) setSelYear(d[0].year)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!selYear) return
+    fetch(`${api}/timeline/months?year=${selYear}`).then(r => r.json()).then(d => {
+      setMonths(d)
+      setSelMonth(d.length > 0 ? d[0].month : null)
+    }).catch(() => {})
+  }, [selYear])
+
+  useEffect(() => {
+    if (!selYear || !selMonth) return
+    setLoading(true)
+    const params = new URLSearchParams({ year: String(selYear), month: String(selMonth), page: String(page), limit: '40' })
+    if (typeFilter) params.set('file_type', typeFilter)
+    fetch(`${api}/timeline?${params}`).then(r => r.json()).then(d => {
+      setChunks(d.results || [])
+      setTotal(d.total || 0)
+    }).catch(() => {}).finally(() => setLoading(false))
+  }, [selYear, selMonth, page, typeFilter])
+
+  const pillStyle = (active: boolean): React.CSSProperties => ({
+    padding: '4px 10px', borderRadius: 20, cursor: 'pointer', fontSize: 11,
+    border: `1px solid ${active ? '#7c6af7' : '#1a1a2e'}`,
+    background: active ? 'rgba(124,106,247,0.12)' : 'transparent',
+    color: active ? '#a78bfa' : '#505068', fontFamily: 'inherit',
+  })
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>Timeline</h2>
+        <p style={{ fontSize: 13, color: '#505068' }}>Your memories organised by time.</p>
+      </div>
+
+      {/* Year selector */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {years.map(y => (
+          <button key={y.year} style={pillStyle(selYear === y.year)} onClick={() => { setSelYear(y.year); setPage(1) }}>
+            {y.year} <span style={{ opacity: 0.5 }}>({y.count})</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Month selector */}
+      {months.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+          {months.map(m => (
+            <button key={m.month} style={pillStyle(selMonth === m.month)} onClick={() => { setSelMonth(m.month); setPage(1) }}>
+              {MONTH_NAMES[m.month - 1]} <span style={{ opacity: 0.5 }}>({m.count})</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Type filter */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
+        {['image','video','audio','document','code'].map(t => (
+          <button key={t} style={pillStyle(typeFilter === t)} onClick={() => { setTypeFilter(typeFilter === t ? null : t); setPage(1) }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>{TYPE_ICONS[t]} {t}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Results grid */}
+      {loading ? (
+        <div style={{ color: '#505068', fontSize: 13 }}>Loading…</div>
+      ) : chunks.length === 0 ? (
+        <div style={{ color: '#383850', fontSize: 13 }}>No items for this period.</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: '#505068', marginBottom: 12 }}>{total} items</div>
+          <ResultGrid results={chunks} onSelect={onSelect} selected={selected} />
+          {total > 40 && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, alignItems: 'center' }}>
+              <button disabled={page === 1} onClick={() => setPage(p => p - 1)}
+                style={{ ...pillStyle(false), opacity: page === 1 ? 0.3 : 1 }}>← Prev</button>
+              <span style={{ fontSize: 11, color: '#505068' }}>Page {page} of {Math.ceil(total / 40)}</span>
+              <button disabled={page >= Math.ceil(total / 40)} onClick={() => setPage(p => p + 1)}
+                style={{ ...pillStyle(false), opacity: page >= Math.ceil(total / 40) ? 0.3 : 1 }}>Next →</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/* ── People Panel ────────────────────────────────────────────────────────────── */
+function PeoplePanel({ api }: { api: string }) {
+  const [identities, setIdentities] = useState<any[]>([])
+  const [selected,   setSelected]   = useState<any | null>(null)
+  const [photos,     setPhotos]     = useState<any[]>([])
+  const [loading,    setLoading]    = useState(false)
+  const [editing,    setEditing]    = useState<string | null>(null)
+  const [editName,   setEditName]   = useState('')
+
+  useEffect(() => {
+    fetch(`${api}/identity/clusters`).then(r => r.json()).then(setIdentities).catch(() => {})
+  }, [])
+
+  function selectPerson(identity: any) {
+    setSelected(identity)
+    setLoading(true)
+    fetch(`${api}/identity/photos/${identity.cluster_id}`).then(r => r.json()).then(d => {
+      setPhotos(d.photos || [])
+    }).catch(() => {}).finally(() => setLoading(false))
+  }
+
+  async function saveName(clusterId: string, name: string) {
+    await fetch(`${api}/identity/label`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cluster_id: clusterId, label: name }),
+    })
+    setIdentities(ids => ids.map(i => i.cluster_id === clusterId ? { ...i, label: name } : i))
+    setEditing(null)
+  }
+
+  const unlabelled = identities.filter(i => !i.label)
+  const labelled   = identities.filter(i => i.label)
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>People</h2>
+        <p style={{ fontSize: 13, color: '#505068' }}>
+          {identities.length} {identities.length === 1 ? 'person' : 'people'} detected in your photos.
+          {unlabelled.length > 0 && <span style={{ color: '#fbbf24' }}> {unlabelled.length} unnamed.</span>}
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', gap: 20 }}>
+        {/* Identity list */}
+        <div style={{ width: 200, flexShrink: 0 }}>
+          {labelled.length > 0 && (
+            <>
+              <div style={{ fontSize: 10, color: '#505068', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>Named</div>
+              {labelled.map(i => (
+                <button key={i.cluster_id} onClick={() => selectPerson(i)} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                  background: selected?.cluster_id === i.cluster_id ? 'rgba(124,106,247,0.1)' : 'transparent',
+                  color: selected?.cluster_id === i.cluster_id ? '#a78bfa' : '#e8e8f0',
+                  fontSize: 13, fontFamily: 'inherit', textAlign: 'left', marginBottom: 2,
+                }}>
+                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'rgba(124,106,247,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, color: '#a78bfa', flexShrink: 0 }}>
+                    {i.label[0].toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12 }}>{i.label}</div>
+                    <div style={{ fontSize: 10, color: '#505068' }}>{i.photo_count} photos</div>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
+
+          {unlabelled.length > 0 && (
+            <>
+              <div style={{ fontSize: 10, color: '#505068', textTransform: 'uppercase', letterSpacing: '0.1em', margin: '16px 0 8px' }}>Unnamed</div>
+              {unlabelled.map((i, idx) => (
+                <button key={i.cluster_id} onClick={() => selectPerson(i)} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                  background: selected?.cluster_id === i.cluster_id ? 'rgba(124,106,247,0.1)' : 'transparent',
+                  color: selected?.cluster_id === i.cluster_id ? '#a78bfa' : '#505068',
+                  fontSize: 13, fontFamily: 'inherit', textAlign: 'left', marginBottom: 2,
+                }}>
+                  <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#1a1a2e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#383850', flexShrink: 0 }}>
+                    ?
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12 }}>Person {idx + 1}</div>
+                    <div style={{ fontSize: 10, color: '#383850' }}>{i.photo_count} photos</div>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
+
+          {identities.length === 0 && (
+            <div style={{ fontSize: 12, color: '#383850' }}>No faces detected yet. Ingest some photos first.</div>
+          )}
+        </div>
+
+        {/* Photo grid + name editor */}
+        {selected && (
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              {editing === selected.cluster_id ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveName(selected.cluster_id, editName); if (e.key === 'Escape') setEditing(null) }}
+                    style={{ background: 'rgba(124,106,247,0.06)', border: '1px solid #7c6af7', borderRadius: 6, color: '#e8e8f0', fontSize: 14, padding: '6px 10px', fontFamily: 'inherit', outline: 'none' }}
+                    placeholder="Enter name…"
+                  />
+                  <button onClick={() => saveName(selected.cluster_id, editName)} style={{ padding: '6px 12px', borderRadius: 6, background: 'rgba(124,106,247,0.15)', border: '1px solid rgba(124,106,247,0.3)', color: '#a78bfa', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>Save</button>
+                  <button onClick={() => setEditing(null)} style={{ padding: '6px 12px', borderRadius: 6, background: 'transparent', border: '1px solid #1a1a2e', color: '#505068', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>Cancel</button>
+                </div>
+              ) : (
+                <>
+                  <span style={{ fontSize: 16, fontWeight: 600, color: '#e8e8f0' }}>{selected.label || 'Unnamed person'}</span>
+                  <button onClick={() => { setEditing(selected.cluster_id); setEditName(selected.label || '') }}
+                    style={{ padding: '4px 10px', borderRadius: 6, background: 'transparent', border: '1px solid #1a1a2e', color: '#505068', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>
+                    {selected.label ? 'Rename' : 'Name this person'}
+                  </button>
+                </>
+              )}
+            </div>
+
+            {loading ? (
+              <div style={{ color: '#505068', fontSize: 13 }}>Loading photos…</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: 6 }}>
+                {photos.map((p: any) => (
+                  <div key={p.chunk_id} style={{ aspectRatio: '1', borderRadius: 8, overflow: 'hidden', background: '#0a0a0f', border: '1px solid #1a1a2e' }}>
+                    {p.thumbnail_url
+                      ? <img src={`${api}${p.thumbnail_url}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Image size={20} color="#252540" /></div>
+                    }
+                  </div>
+                ))}
+                {photos.length === 0 && <div style={{ fontSize: 12, color: '#383850' }}>No photos found.</div>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ── Settings Panel ─────────────────────────────────────────────────────────── */
+function SettingsPanel({ api }: { api: string }) {
+  const [cfg,     setCfg]     = useState<any>(null)
+  const [stats,   setStats]   = useState<any>(null)
+  const [copied,  setCopied]  = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`${api}/setup/config`).then(r => r.json()).then(setCfg).catch(() => {})
+    fetch(`${api}/stats`).then(r => r.json()).then(setStats).catch(() => {})
+  }, [])
+
+  function copy(key: string, value: string) {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(key)
+      setTimeout(() => setCopied(null), 1800)
+    })
+  }
+
+  const Section = ({ title, children }: { title: string, children: React.ReactNode }) => (
+    <div style={{ background: 'rgba(10,10,15,0.8)', border: '1px solid #1a1a2e', borderRadius: 12, padding: '20px 24px', marginBottom: 16 }}>
+      <div style={{ fontSize: 11, color: '#505068', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14 }}>{title}</div>
+      {children}
+    </div>
+  )
+
+  const Row = ({ label, hint, children }: { label: string, hint?: string, children: React.ReactNode }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 16 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: '#e8e8f0' }}>{label}</div>
+        {hint && <div style={{ fontSize: 11, color: '#505068', marginTop: 2 }}>{hint}</div>}
+      </div>
+      <div style={{ flexShrink: 0 }}>{children}</div>
+    </div>
+  )
+
+  const StatusDot = ({ on, onColor = '#34d399', offColor = '#383850' }: { on: boolean, onColor?: string, offColor?: string }) => (
+    <div style={{ width: 6, height: 6, borderRadius: '50%', background: on ? onColor : offColor, boxShadow: on ? `0 0 5px ${onColor}` : 'none' }} />
+  )
+
+  const EnvVar = ({ name, value, copyKey }: { name: string, value: string, copyKey: string }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, padding: '8px 10px', background: 'rgba(124,106,247,0.04)', borderRadius: 6, border: '1px solid #1a1a2e' }}>
+      <code style={{ flex: 1, fontSize: 11, color: '#7c6af7', fontFamily: 'JetBrains Mono, monospace', wordBreak: 'break-all' }}>
+        {name}={value}
+      </code>
+      <button
+        onClick={() => copy(copyKey, `${name}=${value}`)}
+        style={{ padding: '3px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #252540', color: '#505068', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+      >
+        {copied === copyKey ? 'Copied!' : 'Copy'}
+      </button>
+    </div>
+  )
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <div style={{ marginBottom: 28 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#e8e8f0', marginBottom: 6 }}>Settings</h2>
+        <p style={{ fontSize: 13, color: '#505068' }}>
+          Settings are configured via environment variables in <code style={{ color: '#a78bfa', fontSize: 12 }}>.env</code>. Edit that file and restart the container to apply changes.
+        </p>
+      </div>
+
+      {/* Index stats */}
+      <Section title="Index">
+        <Row label="Total memories" hint="Chunks currently indexed">
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#a78bfa', fontFamily: 'JetBrains Mono, monospace' }}>
+            {stats?.total_chunks?.toLocaleString() ?? '—'}
+          </span>
+        </Row>
+        {stats?.by_type && Object.keys(stats.by_type).length > 0 && (
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            {Object.entries(stats.by_type as Record<string, number>).map(([type, count]) => (
+              <div key={type} style={{ fontSize: 11, color: '#505068' }}>
+                <span style={{ color: '#383850' }}>{count.toLocaleString()}</span> {type}
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {/* LLM */}
+      <Section title="LLM Provider">
+        <Row label="Active provider" hint={`Set LLM_PROVIDER in .env`}>
+          <span style={{ fontSize: 12, color: '#e8e8f0', textTransform: 'capitalize' }}>{cfg?.llm_provider ?? '—'}</span>
+        </Row>
+        <div style={{ fontSize: 11, color: '#505068', marginBottom: 6 }}>Copy to .env:</div>
+        <EnvVar name="LLM_PROVIDER" value="anthropic" copyKey="llm_anthropic" />
+        <EnvVar name="LLM_PROVIDER" value="openai"    copyKey="llm_openai" />
+        <EnvVar name="LLM_PROVIDER" value="local"     copyKey="llm_local" />
+        <EnvVar name="ANTHROPIC_MODEL" value="claude-sonnet-4-6" copyKey="model_sonnet" />
+        <EnvVar name="ANTHROPIC_MODEL" value="claude-opus-4-6"   copyKey="model_opus" />
+      </Section>
+
+      {/* TTS */}
+      <Section title="Voice (TTS)">
+        <Row label="Kokoro voice (CPU)" hint={`Current: ${cfg?.tts_kokoro_voice ?? '—'}`}>
+          <span style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'monospace' }}>{cfg?.tts_kokoro_voice ?? '—'}</span>
+        </Row>
+        <Row label="Qwen voice (GPU)" hint={`Current: ${cfg?.tts_qwen_voice ?? '—'}`}>
+          <span style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'monospace' }}>{cfg?.tts_qwen_voice ?? '—'}</span>
+        </Row>
+        <div style={{ fontSize: 11, color: '#505068', marginBottom: 6 }}>Kokoro voice options:</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          {['af_heart','af_bella','af_sarah','af_nicole','am_adam','am_michael','bm_george','bf_emma'].map(v => (
+            <button key={v} onClick={() => copy(`kokoro_${v}`, `TTS_KOKORO_VOICE=${v}`)}
+              style={{ padding: '3px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #1a1a2e', color: copied === `kokoro_${v}` ? '#34d399' : '#505068', fontSize: 10, cursor: 'pointer', fontFamily: 'monospace' }}>
+              {copied === `kokoro_${v}` ? '✓' : ''} {v}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      {/* GPU */}
+      <Section title="GPU & Hardware">
+        <Row label="GPU acceleration" hint={cfg?.gpu_enabled ? 'CUDA active' : 'Set GPU_ENABLED=true in .env'}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <StatusDot on={cfg?.gpu_enabled} />
+            <span style={{ fontSize: 12, color: cfg?.gpu_enabled ? '#34d399' : '#505068' }}>
+              {cfg?.gpu_enabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+        </Row>
+        {!cfg?.gpu_enabled && <EnvVar name="GPU_ENABLED" value="true" copyKey="gpu_enable" />}
+      </Section>
+
+      {/* Auth */}
+      <Section title="API Authentication">
+        <Row label="API key auth" hint={cfg?.auth_enabled ? 'X-API-Key required on all requests' : 'Set OMNEX_API_KEY to enable'}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <StatusDot on={cfg?.auth_enabled} onColor="#34d399" offColor="#fbbf24" />
+            <span style={{ fontSize: 12, color: cfg?.auth_enabled ? '#34d399' : '#fbbf24' }}>
+              {cfg?.auth_enabled ? 'Enabled' : 'Disabled (local only)'}
+            </span>
+          </div>
+        </Row>
+        {!cfg?.auth_enabled && <EnvVar name="OMNEX_API_KEY" value="your_secret_key_here" copyKey="api_key" />}
+      </Section>
+    </div>
+  )
+}
+
+/* ── Expandable Results ─────────────────────────────────────────────────────── */
+function ExpandableResults({ results, total, onSelect, selected }: {
+  results: QueryResult[]
+  total: number
+  onSelect: (c: QueryResult) => void
+  selected: QueryResult | null
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          padding: '4px 0', color: '#505068', fontSize: 11,
+          letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'inherit',
+        }}
+      >
+        <ChevronRight size={12} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+        {total} source{total !== 1 ? 's' : ''} retrieved
+      </button>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          <ResultGrid results={results} onSelect={onSelect} selected={selected} />
+        </div>
+      )}
     </div>
   )
 }
@@ -1119,11 +1610,171 @@ function NavItem({ icon, label, active, onClick, badge }: {
   )
 }
 
+/* ── Brain Orb — TTS indicator ─────────────────────────────────────────────── */
+function BrainOrb({ enabled, speaking, onClick }: { enabled: boolean, speaking: boolean, onClick: () => void }) {
+  return (
+    <motion.button
+      onClick={onClick}
+      title={enabled ? (speaking ? 'Speaking…' : 'Voice output on — click to mute') : 'Voice output off — click to enable'}
+      whileTap={{ scale: 0.88 }}
+      style={{
+        width: 34, height: 34, borderRadius: 12, flexShrink: 0,
+        background: 'transparent', border: '1px solid transparent',
+        cursor: 'pointer', position: 'relative',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 0,
+      }}
+    >
+      {/* Outer pulse rings — only when speaking */}
+      {speaking && (
+        <>
+          <motion.div
+            animate={{ scale: [1, 2.0], opacity: [0.4, 0] }}
+            transition={{ duration: 1.2, repeat: Infinity, ease: 'easeOut' }}
+            style={{
+              position: 'absolute', inset: 4, borderRadius: '50%',
+              border: '1px solid rgba(124,106,247,0.6)', pointerEvents: 'none',
+            }}
+          />
+          <motion.div
+            animate={{ scale: [1, 1.6], opacity: [0.3, 0] }}
+            transition={{ duration: 1.2, repeat: Infinity, ease: 'easeOut', delay: 0.3 }}
+            style={{
+              position: 'absolute', inset: 4, borderRadius: '50%',
+              border: '1px solid rgba(167,139,250,0.5)', pointerEvents: 'none',
+            }}
+          />
+        </>
+      )}
+
+      {/* Core orb */}
+      <motion.div
+        animate={speaking
+          ? { boxShadow: [
+              '0 0 8px rgba(124,106,247,0.4), 0 0 16px rgba(124,106,247,0.2)',
+              '0 0 20px rgba(167,139,250,0.8), 0 0 36px rgba(124,106,247,0.4)',
+              '0 0 8px rgba(124,106,247,0.4), 0 0 16px rgba(124,106,247,0.2)',
+            ] }
+          : { boxShadow: enabled
+              ? '0 0 6px rgba(124,106,247,0.25)'
+              : 'none'
+          }
+        }
+        transition={speaking ? { duration: 0.9, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.3 }}
+        style={{
+          width: 26, height: 26, borderRadius: '50%',
+          background: enabled
+            ? 'radial-gradient(circle at 35% 30%, rgba(192,168,255,0.35) 0%, rgba(124,106,247,0.18) 50%, rgba(5,5,7,0.85) 100%)'
+            : 'radial-gradient(circle at 35% 30%, rgba(80,80,104,0.2) 0%, rgba(26,26,46,0.6) 100%)',
+          border: `1px solid ${enabled ? 'rgba(124,106,247,0.45)' : 'rgba(37,37,64,0.6)'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <Brain size={11} color={enabled ? '#c4b5fd' : '#383850'} strokeWidth={1.4} />
+      </motion.div>
+    </motion.button>
+  )
+}
+
+/* ── Mic Orb — waveform visualiser + push-to-talk + always-listen toggle ───── */
+function MicOrb({
+  listening, micLevel, alwaysListen, onPress, onLongPress,
+}: {
+  listening: boolean
+  micLevel: number
+  alwaysListen: boolean
+  onPress: () => void
+  onLongPress: () => void
+}) {
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const didLongPress = useRef(false)
+
+  function handlePointerDown() {
+    didLongPress.current = false
+    holdTimer.current = setTimeout(() => {
+      didLongPress.current = true
+      onLongPress()
+    }, 600)
+  }
+
+  function handlePointerUp() {
+    if (holdTimer.current) clearTimeout(holdTimer.current)
+    if (!didLongPress.current) onPress()
+  }
+
+  const bars = 5
+  const color = alwaysListen ? '#a78bfa' : listening ? '#f87171' : '#383850'
+  const activeColor = alwaysListen ? '#a78bfa' : '#f87171'
+
+  return (
+    <motion.button
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onPointerLeave={() => { if (holdTimer.current) clearTimeout(holdTimer.current) }}
+      title={alwaysListen ? 'Always-listening on (hold to toggle)' : listening ? 'Recording… click to stop' : 'Click to speak · Hold to toggle always-listen'}
+      whileTap={{ scale: 0.88 }}
+      style={{
+        width: 34, height: 34, borderRadius: 12, flexShrink: 0,
+        background: listening
+          ? 'rgba(248,113,113,0.08)'
+          : alwaysListen ? 'rgba(124,106,247,0.08)' : 'transparent',
+        border: listening
+          ? '1px solid rgba(248,113,113,0.25)'
+          : alwaysListen ? '1px solid rgba(124,106,247,0.25)' : '1px solid transparent',
+        cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        gap: 2, padding: 0, position: 'relative',
+      }}
+    >
+      {/* Always-listen pulse ring */}
+      {alwaysListen && !listening && (
+        <motion.div
+          animate={{ scale: [1, 1.5], opacity: [0.3, 0] }}
+          transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
+          style={{
+            position: 'absolute', inset: 2, borderRadius: 10,
+            border: '1px solid rgba(124,106,247,0.4)', pointerEvents: 'none',
+          }}
+        />
+      )}
+
+      {/* Waveform bars — animated by micLevel when active */}
+      {(listening || alwaysListen) ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 20 }}>
+          {Array.from({ length: bars }).map((_, i) => {
+            const phase = i / (bars - 1)
+            // Centre bar tallest, edges shortest
+            const base = 0.25 + 0.5 * Math.sin(Math.PI * phase)
+            const height = listening
+              ? Math.max(3, (base + micLevel * (1 - base)) * 18)
+              : 3 + base * 6  // idle when always-listen but not currently recording
+            return (
+              <motion.div
+                key={i}
+                animate={{ height }}
+                transition={{ duration: 0.08, ease: 'easeOut' }}
+                style={{
+                  width: 2.5, borderRadius: 2,
+                  background: activeColor,
+                  opacity: listening ? 0.9 : 0.4,
+                }}
+              />
+            )
+          })}
+        </div>
+      ) : (
+        <Mic size={15} color={color} />
+      )}
+    </motion.button>
+  )
+}
+
 /* ── Input bar ─────────────────────────────────────────────────────────────── */
 function InputBar({
   value, onChange, onSubmit, onKey, onFocus, onBlur,
   focused, loading, listening, voiceSupport, onVoice, inputRef,
   ttsSupport, ttsEnabled, onTtsToggle,
+  isSpeaking, micLevel, alwaysListen, onAlwaysListen,
 }: {
   value: string
   onChange: (v: string) => void
@@ -1140,6 +1791,10 @@ function InputBar({
   ttsSupport?: boolean
   ttsEnabled?: boolean
   onTtsToggle?: () => void
+  isSpeaking?: boolean
+  micLevel?: number
+  alwaysListen?: boolean
+  onAlwaysListen?: () => void
 }) {
   const hasValue = value.trim().length > 0
   const borderColor = listening
@@ -1173,7 +1828,7 @@ function InputBar({
           onKeyDown={onKey}
           onFocus={onFocus}
           onBlur={onBlur}
-          placeholder={listening ? 'Listening…' : 'Ask anything about your data…'}
+          placeholder={listening ? 'Listening…' : alwaysListen ? 'Always listening — say something…' : 'Ask anything about your data…'}
           rows={1}
           style={{
             flex: 1, paddingTop: 16, paddingBottom: 10, paddingRight: 8,
@@ -1192,46 +1847,21 @@ function InputBar({
         {/* Button cluster */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 3, paddingBottom: 5, flexShrink: 0 }}>
           {voiceSupport && (
-            <motion.button
-              whileTap={{ scale: 0.88 }}
-              onClick={onVoice}
-              title={listening ? 'Stop listening' : 'Voice input'}
-              style={{
-                width: 34, height: 34, borderRadius: 12, flexShrink: 0,
-                background: listening ? 'rgba(248,113,113,0.1)' : 'transparent',
-                border: listening ? '1px solid rgba(248,113,113,0.25)' : '1px solid transparent',
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: listening ? '#f87171' : '#383850',
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => { if (!listening) (e.currentTarget as HTMLButtonElement).style.color = '#7c6af7' }}
-              onMouseLeave={(e) => { if (!listening) (e.currentTarget as HTMLButtonElement).style.color = '#383850' }}
-            >
-              {listening ? <MicOff size={15} /> : <Mic size={15} />}
-            </motion.button>
+            <MicOrb
+              listening={listening}
+              micLevel={micLevel ?? 0}
+              alwaysListen={alwaysListen ?? false}
+              onPress={onVoice}
+              onLongPress={onAlwaysListen ?? (() => {})}
+            />
           )}
 
           {ttsSupport && (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.92 }}
-              onClick={onTtsToggle}
-              title={ttsEnabled ? 'Voice output on' : 'Voice output off'}
-              style={{
-                width: 34, height: 34, borderRadius: 12, flexShrink: 0,
-                background: ttsEnabled ? 'rgba(52,211,153,0.08)' : 'transparent',
-                border: ttsEnabled ? '1px solid rgba(52,211,153,0.2)' : '1px solid transparent',
-                cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: ttsEnabled ? '#34d399' : '#383850',
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => { if (!ttsEnabled) (e.currentTarget as HTMLButtonElement).style.color = '#34d399' }}
-              onMouseLeave={(e) => { if (!ttsEnabled) (e.currentTarget as HTMLButtonElement).style.color = '#383850' }}
-            >
-              <Volume2 size={15} />
-            </motion.button>
+            <BrainOrb
+              enabled={ttsEnabled ?? false}
+              speaking={isSpeaking ?? false}
+              onClick={onTtsToggle ?? (() => {})}
+            />
           )}
 
           <motion.button
@@ -1265,7 +1895,7 @@ function InputBar({
       {/* Fixed-height hint — always present to prevent layout shift */}
       <div style={{ paddingBottom: 10 }}>
         <span style={{ fontSize: 10, color: focused || hasValue ? 'transparent' : '#252540', transition: 'color 0.2s' }}>
-          Enter to send · Shift+Enter for new line{voiceSupport ? ' · Mic for voice' : ''}
+          Enter to send · Shift+Enter for new line{voiceSupport ? ' · Click mic to speak · Hold mic to always-listen' : ''}
         </span>
       </div>
     </motion.div>

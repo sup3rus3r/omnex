@@ -160,6 +160,30 @@ def delete_vector(index_name: IndexName, leann_id: str) -> None:
         _save(index_name)
 
 
+def delete_vectors(chunk_ids: list[str]) -> int:
+    """Remove all vectors matching the given chunk_ids across all indexes."""
+    id_set = set(chunk_ids)
+    deleted = 0
+    for name in IndexName:
+        try:
+            with _get_lock(name):
+                idx, payload, _ = _get_index(name)
+                key = name.value
+                to_remove = [iid for iid, p in payload.items() if p.get("chunk_id") in id_set]
+                for iid in to_remove:
+                    try:
+                        idx.remove(iid)
+                        _payloads[key].pop(iid, None)
+                        deleted += 1
+                    except Exception:
+                        pass
+                if to_remove:
+                    _save(name)
+        except Exception:
+            pass
+    return deleted
+
+
 def index_size(index_name: IndexName) -> int:
     try:
         idx, _, _ = _get_index(index_name)
