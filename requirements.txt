@@ -57,6 +57,6 @@ xxhash>=3.4.0                 # Fast content hashing for deduplication
 pyngrok>=7.0.0                # Auto ngrok tunnel for remote access
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
-kokoro-onnx>=0.4.0            # CPU TTS fallback (Kokoro ONNX, high quality)
-# VibeVoice-Realtime-0.5B installed from source in Dockerfile (git clone)
+kokoro-onnx>=0.4.0            # CPU TTS fallback (Kokoro ONNX)
 soundfile>=0.12.0             # Audio file I/O for TTS output
+# chatterbox-tts installed via Dockerfile with --no-deps to avoid torch 2.6 upgrade

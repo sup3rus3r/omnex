@@ -122,7 +122,11 @@ Every session persists in MongoDB. The last 10 conversation turns are passed as 
 
 ### Voice Input & TTS Output
 
-Voice input uses local Whisper running on-device — press to speak or hold for always-listening Jarvis mode with automatic voice activity detection. Voice output uses VibeVoice-Realtime-0.5B (Microsoft, ~300ms first token, 6 voices, 24kHz streaming) on GPU, with Kokoro ONNX as CPU fallback. Voice can be selected in the Settings panel. The TTS button is a pulsing brain orb that animates when speaking. The mic button shows a live waveform visualiser during recording. No cloud voice dependency of any kind.
+Voice input uses local Whisper running on-device — press to speak or hold for always-listening Jarvis mode with automatic voice activity detection. Voice output uses **Chatterbox Turbo** (ResembleAI, ~200ms latency, expressive paralinguistic tags, GPU) as the primary engine, with **Kokoro ONNX** as the CPU fallback. Both engines are selectable in the Settings panel at runtime — no restart needed. The LLM uses Chatterbox's expressive tags (`[laugh]`, `[sigh]`, `[chuckle]`, etc.) naturally in responses; tags are sent to TTS but stripped from the chat display. No cloud voice dependency of any kind.
+
+### Agentic Query Engine (LangGraph)
+
+Every query runs through a LangGraph state graph with conditional routing. A classify node makes a single fast LLM call (64 tokens) to decide whether the query needs a data search or is pure conversation — avoiding unnecessary index access for greetings and chitchat. Search queries flow through vector search, single-source document expansion (full doc context for the LLM), and a final LLM answer node. Conversational queries skip the index entirely and go straight to a chat node.
 
 ### Remote Access & Agent API
 
@@ -299,7 +303,8 @@ Check: `mongosh --eval "db.adminCommand('ping')"`. With Docker, no local MongoDB
 | Binary Store | Content-addressed chunk store |
 | Frontend | Next.js 14, React 18, TypeScript, Framer Motion |
 | LLM | Anthropic / OpenAI / Ollama (configurable) |
-| TTS | VibeVoice-Realtime-0.5B (GPU) / Kokoro ONNX (CPU fallback) |
+| Query Engine | LangGraph state graph — classify → search/chat routing |
+| TTS | Chatterbox Turbo (GPU, expressive) / Kokoro ONNX (CPU fallback) |
 | Voice Input | OpenAI Whisper (local, on-device) |
 | Remote Access | ngrok tunnel + MCP JSON-RPC 2.0 server |
 | Virtual Filesystem | FUSE / fusepy — read-write virtual drive (Linux/WSL) |

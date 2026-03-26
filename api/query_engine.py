@@ -419,6 +419,15 @@ async def _node_expand_doc(state: OmnexState) -> OmnexState:
     return {**state, "results": results, "expansion_ids": expansion_ids}
 
 
+_EXPRESSION_GUIDE = (
+    "You can use paralinguistic expression tags to make your voice responses more natural and expressive. "
+    "Use them sparingly and only where they genuinely fit the tone. "
+    "Available tags: [laugh] [chuckle] [sigh] [gasp] [cough] [clear throat] [sniff] [groan] [shush] "
+    "Example: 'Let me check that for you. [clear throat] Here is what I found.' "
+    "Example: 'I could not find anything matching that. [sigh] Try rephrasing your search.' "
+    "Never overuse tags — one per response at most unless the content genuinely calls for more."
+)
+
 _ANSWER_SYSTEM = (
     "You are Omnex, a personal AI memory system. "
     "Search results from the user's indexed personal files are provided below. "
@@ -432,7 +441,8 @@ _ANSWER_SYSTEM = (
     "List only the IDs (from the ID: field) of results that are relevant to the query. "
     "Then write a concise response using only facts from those results. "
     "If none match: RELEVANT_IDS: [] and say you found nothing. "
-    "Do not use markdown, bullet points, or bold text. Write in plain sentences."
+    "Do not use markdown, bullet points, or bold text. Write in plain sentences.\n\n"
+    + _EXPRESSION_GUIDE
 )
 
 _CHAT_SYSTEM = (
@@ -440,7 +450,8 @@ _CHAT_SYSTEM = (
     "The user is having a casual conversation — no data search is needed. "
     "Respond naturally and helpfully. Keep replies short. "
     "If asked what you can do: you index and search the user's personal files "
-    "(documents, photos, videos, audio, code) so they can find anything in plain language."
+    "(documents, photos, videos, audio, code) so they can find anything in plain language.\n\n"
+    + _EXPRESSION_GUIDE
 )
 
 

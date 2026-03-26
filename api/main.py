@@ -25,6 +25,18 @@ async def lifespan(app: FastAPI):
     start_tunnel(port=8000)
     # Restore watches in background — don't block startup
     threading.Thread(target=restore_watches, daemon=True, name="omnex-restore-watches").start()
+    # Pre-warm TTS engine in background so first user request is fast
+    def _warm_tts():
+        import logging
+        log = logging.getLogger("omnex.startup")
+        try:
+            from api.tts import synthesize
+            log.info("[startup] warming TTS engine...")
+            synthesize("ready")
+            log.info("[startup] TTS engine warm")
+        except Exception as e:
+            log.warning(f"[startup] TTS warmup failed (non-fatal): {e}")
+    threading.Thread(target=_warm_tts, daemon=True, name="omnex-tts-warmup").start()
     yield
 
 

@@ -57,6 +57,11 @@ const MODEL_DISPLAY: Record<string, string> = {
   deepface: 'Identity Model',
 }
 
+// Strip Chatterbox paralinguistic tags from display text — they are for TTS only
+function stripTtsTags(text: string): string {
+  return text.replace(/\[(laugh|chuckle|sigh|gasp|cough|clear throat|sniff|groan|shush)\]/gi, '').replace(/\s{2,}/g, ' ').trim()
+}
+
 export default function Home() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null) // chunk_id pending delete
   const [setupDone,     setSetupDone]     = useState<boolean>(true)
@@ -88,7 +93,8 @@ export default function Home() {
   const [sessionId,     setSessionId]     = useState<string | null>(null)
   const [previewWidth,  setPreviewWidth]  = useState(420)
   const previewDragRef  = useRef<{ startX: number; startW: number } | null>(null)
-  const [ttsVoice,      setTtsVoice]      = useState<string>('Emma')
+  const [ttsVoice,      setTtsVoice]      = useState<string>('af_heart')
+  const [ttsEngine,     setTtsEngine]     = useState<string>('chatterbox')
   const [streamingText, setStreamingText] = useState('')
   const [ingestToast,   setIngestToast]   = useState<{path: string, pct: number, eta: number | null, fpm: number | null} | null>(null)
   const [expandNudge,   setExpandNudge]   = useState(false)
@@ -216,10 +222,11 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       const res = await fetch(`${API}/voice/speak`, {
         method:  'POST',
         headers,
-        body:    JSON.stringify({ text, voice: ttsVoice }),
+        body:    JSON.stringify({ text, voice: ttsVoice, engine: ttsEngine }),
       })
       if (!res.ok) return
-      // Collect the streamed WAV (header + PCM chunks arrive incrementally)
+
+      // Collect full WAV then play — simple and reliable across all browsers
       const blob = await res.blob()
       const url  = URL.createObjectURL(blob)
       const audio = new Audio(url)
@@ -231,7 +238,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       console.warn('TTS failed:', e)
       setIsSpeaking(false)
     }
-  }, [ttsEnabled, ttsVoice, apiKey, API])
+  }, [ttsEnabled, ttsVoice, ttsEngine, apiKey, API])
 
   async function handleQuery(query: string) {
     if (!query.trim() || loading) return
@@ -307,17 +314,18 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
           }
         }
 
-        // Finalize: write text into last assistant message
+        // Finalize: write stripped text into last assistant message (tags are for TTS only)
+        const displayText = stripTtsTags(fullText)
         setMessages((m) => {
           const updated = [...m]
           const lastIdx = updated.map((msg, i) => msg.role === 'assistant' ? i : -1).filter(i => i >= 0).pop()
-          if (lastIdx !== undefined) updated[lastIdx] = { ...updated[lastIdx], content: fullText }
+          if (lastIdx !== undefined) updated[lastIdx] = { ...updated[lastIdx], content: displayText }
           return updated
         })
         setStreamingText('')
         setLlmLoading(false)
 
-        // Voice output
+        // Voice output — send raw text with tags so TTS can use them
         if (fullText) speakText(fullText)
       }
     } catch (err) {
@@ -784,7 +792,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
                                         )}
                                       </div>
                                       <div style={{ fontSize: 14, lineHeight: 1.7, color: '#e8e8f0' }} className="md-prose">
-                                        <ReactMarkdown>{streamingText}</ReactMarkdown>
+                                        <ReactMarkdown>{stripTtsTags(streamingText)}</ReactMarkdown>
                                         {llmLoading && <span style={{ display: 'inline-block', width: 2, height: 14, background: '#7c6af7', marginLeft: 2, verticalAlign: 'middle', animation: 'blink 1s step-end infinite' }} />}
                                       </div>
                                     </div>
@@ -923,7 +931,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
               animate={{ opacity: 1, y: 0 }}
               style={{ flex: 1, overflow: 'auto', padding: '32px 32px', position: 'relative', zIndex: 1 }}
             >
-              <SettingsPanel api={API} ttsVoice={ttsVoice} onTtsVoiceChange={setTtsVoice} />
+              <SettingsPanel api={API} ttsVoice={ttsVoice} onTtsVoiceChange={setTtsVoice} ttsEngine={ttsEngine} onTtsEngineChange={setTtsEngine} />
             </motion.div>
 
           ) : null}
@@ -1476,7 +1484,7 @@ function PeoplePanel({ api }: { api: string }) {
 }
 
 /* ── Settings Panel ─────────────────────────────────────────────────────────── */
-function SettingsPanel({ api, ttsVoice, onTtsVoiceChange }: { api: string, ttsVoice: string, onTtsVoiceChange: (v: string) => void }) {
+function SettingsPanel({ api, ttsVoice, onTtsVoiceChange, ttsEngine, onTtsEngineChange }: { api: string, ttsVoice: string, onTtsVoiceChange: (v: string) => void, ttsEngine: string, onTtsEngineChange: (v: string) => void }) {
   const [cfg,     setCfg]     = useState<any>(null)
   const [stats,   setStats]   = useState<any>(null)
   const [copied,  setCopied]  = useState<string | null>(null)
@@ -1570,24 +1578,40 @@ function SettingsPanel({ api, ttsVoice, onTtsVoiceChange }: { api: string, ttsVo
 
       {/* TTS */}
       <Section title="Voice (TTS)">
-        {/* Engine status */}
-        <Row label="Active engine" hint={cfg?.gpu_enabled ? 'VibeVoice-Realtime on GPU' : 'Kokoro ONNX on CPU'}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <StatusDot on={true} />
-            <span style={{ fontSize: 12, color: '#e8e8f0', fontFamily: 'monospace' }}>
-              {cfg?.gpu_enabled ? 'VibeVoice' : 'Kokoro'}
-            </span>
-          </div>
-        </Row>
+        {/* Engine picker */}
+        <div style={{ fontSize: 11, color: '#505068', marginBottom: 8 }}>Engine</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+          {(['chatterbox', 'kokoro'] as const).map(e => {
+            const available = e === 'chatterbox' ? cfg?.chatterbox_available : cfg?.kokoro_ready
+            return (
+              <button
+                key={e}
+                onClick={() => onTtsEngineChange(e)}
+                disabled={!available}
+                style={{
+                  padding: '6px 16px', borderRadius: 6, cursor: available ? 'pointer' : 'not-allowed',
+                  border: `1px solid ${ttsEngine === e ? 'rgba(124,106,247,0.5)' : '#1a1a2e'}`,
+                  background: ttsEngine === e ? 'rgba(124,106,247,0.12)' : 'transparent',
+                  color: !available ? '#2a2a3e' : ttsEngine === e ? '#a78bfa' : '#505068',
+                  fontSize: 12, fontFamily: 'inherit', transition: 'all 0.12s',
+                }}
+              >
+                {e === 'chatterbox' ? 'Chatterbox' : 'Kokoro'}
+                {e === 'chatterbox' && <span style={{ fontSize: 10, marginLeft: 5, color: '#34d399' }}>GPU</span>}
+                {e === 'kokoro'     && <span style={{ fontSize: 10, marginLeft: 5, color: '#505068' }}>CPU</span>}
+              </button>
+            )
+          })}
+        </div>
 
-        {/* VibeVoice voice picker — shown when GPU enabled */}
-        {cfg?.gpu_enabled !== false && (
+        {/* Kokoro voice picker — shown when kokoro selected */}
+        {ttsEngine === 'kokoro' && (
           <>
             <div style={{ fontSize: 11, color: '#505068', marginBottom: 8 }}>
-              VibeVoice voice <span style={{ color: '#383850' }}>(active session)</span>
+              Kokoro voice <span style={{ color: '#383850' }}>({cfg?.kokoro_voice ?? 'af_heart'} active)</span>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
-              {(cfg?.tts_vibevoice_voices ?? ['Carter','Davis','Emma','Frank','Grace','Mike']).map((v: string) => (
+              {(cfg?.kokoro_voices ?? ['af_heart','af_bella','af_sarah','af_nicole','am_adam','am_michael','bm_george','bf_emma']).map((v: string) => (
                 <button
                   key={v}
                   onClick={() => onTtsVoiceChange(v)}
@@ -1603,24 +1627,14 @@ function SettingsPanel({ api, ttsVoice, onTtsVoiceChange }: { api: string, ttsVo
                 </button>
               ))}
             </div>
-            <div style={{ fontSize: 11, color: '#383850', marginBottom: 14 }}>
-              To set default: add <code style={{ color: '#505068' }}>VIBEVOICE_VOICE=Emma</code> to .env
-            </div>
           </>
         )}
 
-        {/* Kokoro fallback info */}
-        <Row label="Kokoro voice (CPU fallback)" hint={`Current: ${cfg?.tts_kokoro_voice ?? '—'}`}>
-          <span style={{ fontSize: 12, color: '#505068', fontFamily: 'monospace' }}>{cfg?.tts_kokoro_voice ?? '—'}</span>
-        </Row>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-          {['af_heart','af_bella','af_sarah','af_nicole','am_adam','am_michael','bm_george','bf_emma'].map(v => (
-            <button key={v} onClick={() => copy(`kokoro_${v}`, `TTS_KOKORO_VOICE=${v}`)}
-              style={{ padding: '3px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #1a1a2e', color: copied === `kokoro_${v}` ? '#34d399' : '#383850', fontSize: 10, cursor: 'pointer', fontFamily: 'monospace' }}>
-              {copied === `kokoro_${v}` ? '✓ copied' : v}
-            </button>
-          ))}
-        </div>
+        {ttsEngine === 'chatterbox' && (
+          <div style={{ fontSize: 11, color: '#383850' }}>
+            Chatterbox Turbo — expressive, ~200ms latency on GPU.
+          </div>
+        )}
       </Section>
 
       {/* GPU */}

@@ -100,14 +100,18 @@ async def public_config():
     """Return public configuration the UI needs to know about."""
     import os
     from api.auth import api_key_enabled
-    from api.tts import VIBEVOICE_VOICES
+    from api.tts import KOKORO_VOICES, KOKORO_VOICE, _chatterbox_available
+    import os as _os
+    kokoro_model = _os.path.join(_os.getenv("OMNEX_DATA_PATH", "/data"), "models", "kokoro", "kokoro-v1.0.onnx")
     return {
-        "auth_enabled":       api_key_enabled(),
-        "gpu_enabled":        os.getenv("GPU_ENABLED", "false").lower() == "true",
-        "llm_provider":       os.getenv("LLM_PROVIDER", "local"),
-        "tts_kokoro_voice":   os.getenv("TTS_KOKORO_VOICE", "af_heart"),
-        "tts_vibevoice_voice": os.getenv("VIBEVOICE_VOICE", "Emma"),
-        "tts_vibevoice_voices": VIBEVOICE_VOICES,
+        "auth_enabled":         api_key_enabled(),
+        "gpu_enabled":          os.getenv("GPU_ENABLED", "false").lower() == "true",
+        "llm_provider":         os.getenv("LLM_PROVIDER", "local"),
+        "tts_engine":           os.getenv("TTS_ENGINE", "chatterbox"),
+        "chatterbox_available": _chatterbox_available(),
+        "kokoro_voice":         KOKORO_VOICE,
+        "kokoro_voices":        KOKORO_VOICES,
+        "kokoro_ready":         _os.path.exists(kokoro_model),
     }
 
 

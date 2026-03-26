@@ -66,13 +66,24 @@ RUN grep -vE "^torch(vision|audio)?[=><!]" requirements.txt > /tmp/req_notorch.t
 # InsightFace
 RUN pip install --no-cache-dir insightface>=0.7.3
 
-# VibeVoice-Realtime-0.5B — realtime streaming TTS (~300ms first token)
-# Runs in an isolated subprocess at runtime to avoid heap conflicts with onnxruntime-gpu
-# Clone GitHub repo — HuggingFace repo has no pyproject.toml
-# We install the package deps via pyproject.toml extras, then import directly from the repo.
-RUN git clone --depth 1 https://github.com/microsoft/VibeVoice.git /opt/vibevoice \
-    && pip install --no-cache-dir -e "/opt/vibevoice[streamingtts]" \
-    || echo "VibeVoice install failed — will fall back to Kokoro at runtime"
+# Chatterbox Turbo TTS — expressive, ~200ms latency on GPU
+# Install without deps to avoid torch version conflict (we pin torch 2.5.1+cu124)
+# then install only the runtime deps that aren't already in requirements.txt
+RUN pip install --no-cache-dir chatterbox-tts --no-deps \
+    && pip install --no-cache-dir \
+        "antlr4-python3-runtime==4.9.3" \
+        conformer \
+        diffusers \
+        einops \
+        librosa \
+        omegaconf \
+        pykakasi \
+        pyloudnorm \
+        resemble-perth \
+        s3tokenizer \
+        safetensors \
+        spacy-pkuseg \
+    || echo "Chatterbox install failed — will fall back to Kokoro at runtime"
 
 # usearch — compressed file-based vector index (i8 quantization, replaces leann)
 RUN pip install --no-cache-dir usearch>=2.9.0
@@ -102,8 +113,7 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/data/models/huggingface
 ENV WHISPER_CACHE=/data/models/whisper
-ENV VIBEVOICE_REPO_PATH=/opt/vibevoice
-ENV VIBEVOICE_MODEL_ID=microsoft/VibeVoice-Realtime-0.5B
+ENV TTS_ENGINE=chatterbox
 # Use jemalloc instead of glibc ptmalloc to prevent heap corruption
 # from CUDA runtime conflicting with native extension allocators
 ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
