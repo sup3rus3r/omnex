@@ -20,39 +20,29 @@ EMBEDDING_DIM = 384
 def _get_model():
     global _model
     if _model is None:
+        import sys, time
+        print(f"[embeddings.text] loading SentenceTransformer...", flush=True, file=sys.stderr)
+        t0 = time.time()
         from sentence_transformers import SentenceTransformer
-        cache_dir = str(Path(os.getenv("OMNEX_DATA_PATH", "./data")).parent / "models" / "cache")
         device = "cuda" if _gpu_available() else "cpu"
-        _model = SentenceTransformer(MODEL_ID, cache_folder=cache_dir, device=device)
+        _model = SentenceTransformer(MODEL_ID, device=device)
+        print(f"[embeddings.text] model ready ({time.time()-t0:.1f}s)", flush=True, file=sys.stderr)
     return _model
 
 
 def embed(text: str) -> np.ndarray:
-    """
-    Embed a single text string.
-
-    Returns:
-        np.ndarray of shape (384,), dtype float32
-    """
     return embed_batch([text])[0]
 
 
 def embed_batch(texts: list[str], batch_size: int = 64) -> np.ndarray:
-    """
-    Embed a list of strings.
-
-    Returns:
-        np.ndarray of shape (N, 384), dtype float32
-    """
     if not texts:
         return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
-
     model = _get_model()
     embeddings = model.encode(
         texts,
         batch_size=batch_size,
         convert_to_numpy=True,
-        normalize_embeddings=True,  # unit vectors — cosine sim = dot product
+        normalize_embeddings=True,
         show_progress_bar=False,
     )
     return embeddings.astype(np.float32)

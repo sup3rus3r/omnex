@@ -1,0 +1,128 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg:           #050507;
+  --surface:      #0a0a0f;
+  --surface-2:    #0f0f18;
+  --surface-3:    #14141f;
+  --border:       #1a1a2e;
+  --border-2:     #252540;
+  --border-3:     #30305a;
+  --text:         #e8e8f0;
+  --text-2:       #a0a0b8;
+  --muted:        #505068;
+  --muted-2:      #383850;
+  --accent:       #7c6af7;
+  --accent-2:     #a78bfa;
+  --accent-glow:  rgba(124, 106, 247, 0.15);
+  --accent-hover: #9b8fff;
+  --green:        #34d399;
+  --red:          #f87171;
+  --amber:        #fbbf24;
+  --blue:         #60a5fa;
+  --sidebar-w:    220px;
+}
+
+* { box-sizing: border-box; padding: 0; margin: 0; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar       { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-2); }
+
+::selection { background: rgba(124,106,247,0.2); color: var(--text); }
+
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Spin */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Cursor blink */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.cursor-blink { animation: blink 1s step-end infinite; }
+
+/* Scan line overlay */
+@keyframes scanline {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+/* Ambient glow */
+@keyframes ambientPulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50%       { opacity: 0.7; transform: scale(1.05); }
+}
+
+/* Grid fade */
+@keyframes gridFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.grid-fade { animation: gridFadeIn 0.3s ease-out forwards; }
+
+/* Wave bars */
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.4); }
+  50%       { transform: scaleY(1); }
+}
+
+/* Number counter */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Typing dot */
+@keyframes typingDot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30%           { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Neon border */
+@keyframes neonBorder {
+  0%, 100% { box-shadow: 0 0 0 1px var(--border), 0 0 20px rgba(124,106,247,0); }
+  50%       { box-shadow: 0 0 0 1px var(--accent), 0 0 20px rgba(124,106,247,0.15); }
+}
+
+/* Data stream */
+@keyframes dataStream {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.data-stream::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(124,106,247,0.4), transparent);
+  animation: dataStream 2s ease-in-out infinite;
+}
+
+/* Hex grid background pattern */
+.hex-pattern {
+  background-image:
+    radial-gradient(circle at 25% 25%, rgba(124,106,247,0.03) 0%, transparent 60%),
+    radial-gradient(circle at 75% 75%, rgba(96,165,250,0.02) 0%, transparent 60%);
+}

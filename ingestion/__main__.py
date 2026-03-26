@@ -55,6 +55,16 @@ def collect_files(path: Path) -> list[Path]:
     return files
 
 
+def _ingest_file_safe(path: Path) -> dict:
+    import sys, traceback
+    try:
+        return ingest_file(path)
+    except Exception:
+        msg = traceback.format_exc()
+        print(f"[ingest_file] CRASH on {path}:\n{msg}", flush=True, file=sys.stderr)
+        return {"path": str(path), "status": "error", "error": msg[:200]}
+
+
 def ingest_file(path: Path) -> dict:
     """
     Full ingestion pipeline for a single file.
@@ -72,26 +82,181 @@ def ingest_file(path: Path) -> dict:
 
         text, file_type, mime = route(path)
 
-        # Binary files — store raw, no text embedding yet
-        if file_type in (FileType.IMAGE, FileType.VIDEO, FileType.AUDIO):
+        # Images — CLIP embed + EXIF + thumbnail + store binary
+        if file_type == FileType.IMAGE:
+            from ingestion.processors.image import process as process_image
+            from storage.binary_store import store_thumbnail
+            img_result = process_image(path)
+            if img_result is None:
+                result["status"] = "error"
+                return result
+
             refs = store_file(path, content_hash)
-            for i, ref in enumerate(refs):
+            file_meta = {**_extract_metadata(path), **img_result.metadata}
+            doc = build_chunk_doc(
+                source_path=str(path),
+                source_hash=content_hash,
+                chunk_index=0,
+                chunk_total=1,
+                file_type=file_type.value,
+                mime_type=mime,
+                text_content=None,
+                data_ref=refs[0] if refs else None,
+                tags=_auto_tags(path, file_type, metadata=file_meta, image_embedding=img_result.embedding),
+                metadata=file_meta,
+                embedding_model="clip-vit-base-patch32",
+            )
+            chunk_id = insert_chunk(doc)
+            store_thumbnail(chunk_id, img_result.thumbnail)
+            leann_id = add_vector(
+                IndexName.IMAGE,
+                chunk_id,
+                img_result.embedding,
+                metadata={"file_type": "image", "source_path": str(path)},
+            )
+            update_chunk_leann_id(chunk_id, leann_id)
+
+            # Store face crops and embeddings for Phase 4 clustering
+            if img_result.detected_faces:
+                _store_face_data(chunk_id, img_result.detected_faces)
+
+            result["status"] = "indexed"
+            result["chunks"] = 1
+            return result
+
+        # Audio — Whisper transcription → MiniLM embed → LEANN AUDIO index
+        if file_type == FileType.AUDIO:
+            from ingestion.processors.audio import process as process_audio
+            audio_result = process_audio(path)
+            if audio_result is None:
+                result["status"] = "error"
+                return result
+
+            refs = store_file(path, content_hash)
+            base_meta = {**_extract_metadata(path), **audio_result.metadata}
+            segments = audio_result.segments
+            if not segments:
+                result["status"] = "no_text"
+                return result
+
+            texts = [s["text"] for s in segments]
+            embeddings = embed_batch(texts)
+
+            for i, (seg, embedding) in enumerate(zip(segments, embeddings)):
+                seg_meta = {
+                    **base_meta,
+                    "start_seconds": seg["start"],
+                    "end_seconds": seg["end"],
+                    "language": seg["language"],
+                }
                 doc = build_chunk_doc(
                     source_path=str(path),
                     source_hash=content_hash,
                     chunk_index=i,
-                    chunk_total=len(refs),
+                    chunk_total=len(segments),
+                    file_type=file_type.value,
+                    mime_type=mime,
+                    text_content=seg["text"],
+                    data_ref=refs[0] if refs else None,
+                    tags=_auto_tags(path, file_type, metadata=seg_meta, text_content=seg["text"]),
+                    metadata=seg_meta,
+                    embedding_model="whisper+all-MiniLM-L6-v2",
+                )
+                chunk_id = insert_chunk(doc)
+                leann_id = add_vector(
+                    IndexName.AUDIO,
+                    chunk_id,
+                    embedding.tolist(),
+                    metadata={"file_type": "audio", "source_path": str(path)},
+                )
+                update_chunk_leann_id(chunk_id, leann_id)
+
+            result["status"] = "indexed"
+            result["chunks"] = len(segments)
+            return result
+
+        # Video — Whisper transcript + CLIP keyframes → LEANN AUDIO + VIDEO indexes
+        if file_type == FileType.VIDEO:
+            from ingestion.processors.video import process as process_video
+            from storage.binary_store import store_thumbnail
+            video_result = process_video(path)
+            if video_result is None:
+                result["status"] = "error"
+                return result
+
+            refs = store_file(path, content_hash)
+            base_meta = {**_extract_metadata(path), **video_result.metadata}
+            chunk_count = 0
+
+            # Transcript chunks → MiniLM → LEANN AUDIO index
+            if video_result.transcript_segments:
+                texts = [s["text"] for s in video_result.transcript_segments]
+                text_embeddings = embed_batch(texts)
+
+                for i, (seg, embedding) in enumerate(zip(video_result.transcript_segments, text_embeddings)):
+                    seg_meta = {
+                        **base_meta,
+                        "start_seconds": seg["start"],
+                        "end_seconds": seg["end"],
+                        "language": seg["language"],
+                    }
+                    doc = build_chunk_doc(
+                        source_path=str(path),
+                        source_hash=content_hash,
+                        chunk_index=i,
+                        chunk_total=len(video_result.transcript_segments),
+                        file_type=file_type.value,
+                        mime_type=mime,
+                        text_content=seg["text"],
+                        data_ref=refs[0] if refs else None,
+                        tags=_auto_tags(path, file_type, metadata=seg_meta, text_content=seg["text"]) + ["transcript"],
+                        metadata=seg_meta,
+                        embedding_model="whisper+all-MiniLM-L6-v2",
+                    )
+                    chunk_id = insert_chunk(doc)
+                    leann_id = add_vector(
+                        IndexName.AUDIO,
+                        chunk_id,
+                        embedding.tolist(),
+                        metadata={"file_type": "video_transcript", "source_path": str(path)},
+                    )
+                    update_chunk_leann_id(chunk_id, leann_id)
+                    chunk_count += 1
+
+            # Keyframes → CLIP → LEANN VIDEO index
+            for i, frame in enumerate(video_result.frames):
+                frame_meta = {**base_meta, "timestamp_seconds": frame.timestamp}
+                doc = build_chunk_doc(
+                    source_path=str(path),
+                    source_hash=f"{content_hash}_frame{i}",
+                    chunk_index=i,
+                    chunk_total=len(video_result.frames),
                     file_type=file_type.value,
                     mime_type=mime,
                     text_content=None,
-                    data_ref=ref,
-                    tags=_auto_tags(path, file_type),
-                    metadata=_extract_metadata(path),
-                    embedding_model="pending",
+                    data_ref=refs[0] if refs else None,
+                    tags=_auto_tags(path, file_type, metadata=frame_meta, image_embedding=frame.embedding) + ["keyframe"],
+                    metadata=frame_meta,
+                    embedding_model="clip-vit-base-patch32",
                 )
-                insert_chunk(doc)
-            result["status"] = "stored_binary"
-            result["chunks"] = len(refs)
+                chunk_id = insert_chunk(doc)
+                leann_id = add_vector(
+                    IndexName.VIDEO,
+                    chunk_id,
+                    frame.embedding,
+                    metadata={"file_type": "video_frame", "source_path": str(path),
+                               "timestamp": frame.timestamp},
+                )
+                update_chunk_leann_id(chunk_id, leann_id)
+                chunk_count += 1
+
+            # Store video thumbnail (first good frame)
+            if video_result.thumbnail and refs:
+                # Use the source hash as a stable thumbnail key
+                store_thumbnail(f"{content_hash}_thumb", video_result.thumbnail)
+
+            result["status"] = "indexed"
+            result["chunks"] = chunk_count
             return result
 
         # Text/code/document — chunk and embed
@@ -104,13 +269,41 @@ def ingest_file(path: Path) -> dict:
             result["status"] = "no_chunks"
             return result
 
-        # Batch embed all chunks
-        texts = [c.text for c in chunks]
-        embeddings = embed_batch(texts)
+        chunk_texts = [c.text for c in chunks]
 
-        index_name = IndexName.CODE if file_type == FileType.CODE else IndexName.TEXT
+        if file_type == FileType.CODE:
+            # CodeBERT embeddings for code
+            from embeddings.code import embed_batch as code_embed_batch
+            from ingestion.processors.code import process as process_code
+            embeddings    = code_embed_batch(chunk_texts)
+            code_result   = process_code(path, chunk_texts)
+            index_name    = IndexName.CODE
+            embedding_model = "codebert-base"
+        else:
+            embeddings      = embed_batch(chunk_texts)
+            code_result     = None
+            index_name      = IndexName.TEXT
+            embedding_model = "all-MiniLM-L6-v2"
+
+        base_meta = _extract_metadata(path)
 
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            chunk_meta = dict(base_meta)
+
+            if code_result and i < len(code_result.chunk_metas):
+                cm = code_result.chunk_metas[i]
+                chunk_meta.update({
+                    "language":    cm.language,
+                    "symbol_name": cm.symbol_name,
+                    "symbol_type": cm.symbol_type,
+                    "start_line":  cm.start_line,
+                    "end_line":    cm.end_line,
+                })
+
+            tags = _auto_tags(path, file_type, metadata=chunk_meta, text_content=chunk.text)
+            if code_result:
+                tags.append(code_result.language)
+
             doc = build_chunk_doc(
                 source_path=str(path),
                 source_hash=content_hash,
@@ -120,9 +313,9 @@ def ingest_file(path: Path) -> dict:
                 mime_type=mime,
                 text_content=chunk.text,
                 data_ref=None,
-                tags=_auto_tags(path, file_type),
-                metadata=_extract_metadata(path),
-                embedding_model="all-MiniLM-L6-v2",
+                tags=tags,
+                metadata=chunk_meta,
+                embedding_model=embedding_model,
             )
             chunk_id = insert_chunk(doc)
             leann_id = add_vector(
@@ -144,35 +337,50 @@ def ingest_file(path: Path) -> dict:
     return result
 
 
-def run(source_path: Path, workers: int = 4) -> None:
+def run(source_path: Path, workers: int = 4, cancel_event=None) -> None:
+    import sys
+    print(f"[run] source_path={source_path} exists={source_path.exists()}", flush=True, file=sys.stderr)
     logger.info(f"Omnex ingestion starting — source: {source_path}")
 
     files = collect_files(source_path)
     total = len(files)
+    print(f"[run] collect_files found {total} files", flush=True, file=sys.stderr)
 
     if total == 0:
         logger.info("No indexable files found.")
+        print(f"[run] returning early — no indexable files at {source_path}", flush=True, file=sys.stderr)
         return
 
     logger.info(f"Found {total:,} files to process")
 
-    upsert_ingestion_state(str(source_path), {
-        "source_path": str(source_path),
-        "total_files": total,
-        "processed": 0,
-        "indexed": 0,
-        "skipped": 0,
-        "errors": 0,
-        "started_at": datetime.now(timezone.utc),
-        "status": "running",
-    })
+    print(f"[run] calling upsert_ingestion_state for {source_path}", flush=True, file=sys.stderr)
+    try:
+        upsert_ingestion_state(str(source_path), {
+            "source_path": str(source_path),
+            "total_files": total,
+            "processed": 0,
+            "indexed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "started_at": datetime.now(timezone.utc),
+            "status": "running",
+        })
+        print(f"[run] upsert_ingestion_state OK", flush=True, file=sys.stderr)
+    except Exception as e:
+        print(f"[run] upsert_ingestion_state FAILED: {e}", flush=True, file=sys.stderr)
+        raise
 
     processed = indexed = skipped = errors = 0
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(ingest_file, f): f for f in files}
+        futures = {executor.submit(_ingest_file_safe, f): f for f in files}
 
         for future in as_completed(futures):
+            if cancel_event and cancel_event.is_set():
+                logger.info("Ingestion cancelled by user request.")
+                for f in futures:
+                    f.cancel()
+                break
             res = future.result()
             processed += 1
 
@@ -210,13 +418,93 @@ def run(source_path: Path, workers: int = 4) -> None:
         f"  Errors      : {errors}\n"
     )
 
+    # Run face clustering after ingestion completes
+    _run_face_clustering()
 
-def _auto_tags(path: Path, file_type: FileType) -> list[str]:
-    tags = [file_type.value]
-    suffix = path.suffix.lower().lstrip(".")
-    if suffix:
-        tags.append(suffix)
-    return tags
+
+def _store_face_data(chunk_id: str, detected_faces: list) -> None:
+    """Persist face embeddings and crops linked to a chunk."""
+    from storage.mongo import get_db
+    from storage.binary_store import store_thumbnail
+
+    db = get_db()
+    for i, face in enumerate(detected_faces):
+        face_id = f"{chunk_id}_face{i}"
+        # Store crop as a thumbnail-style binary
+        store_thumbnail(face_id, face.crop_bytes)
+        # Store embedding in faces collection for later clustering
+        db["face_embeddings"].update_one(
+            {"face_id": face_id},
+            {"$set": {
+                "face_id":    face_id,
+                "chunk_id":   chunk_id,
+                "embedding":  face.embedding,
+                "bbox":       face.bbox,
+                "confidence": face.confidence,
+                "cluster_id": None,  # filled in after clustering
+            }},
+            upsert=True,
+        )
+
+
+def _run_face_clustering() -> None:
+    """
+    Cluster all stored face embeddings into identity groups.
+    Runs after ingestion — can also be triggered independently.
+    """
+    from storage.mongo import get_db
+    from embeddings.faces import cluster_embeddings, cluster_centroid
+
+    db = get_db()
+    unclustered = list(db["face_embeddings"].find({"cluster_id": None}))
+
+    if not unclustered:
+        return
+
+    logger.info(f"Clustering {len(unclustered)} face embeddings...")
+
+    embeddings = [f["embedding"] for f in unclustered]
+    chunk_ids  = [f["chunk_id"]  for f in unclustered]
+
+    clusters = cluster_embeddings(embeddings, chunk_ids)
+
+    if not clusters:
+        logger.info("No face clusters formed.")
+        return
+
+    for cluster in clusters:
+        centroid = cluster_centroid(cluster.embeddings)
+        db["identities"].update_one(
+            {"cluster_id": cluster.cluster_id},
+            {"$set": {
+                "cluster_id":      cluster.cluster_id,
+                "face_count":      cluster.face_count,
+                "face_embeddings": cluster.embeddings,
+                "centroid":        centroid,
+                "label":           None,
+            }},
+            upsert=True,
+        )
+
+    logger.info(f"Face clustering complete — {len(clusters)} identities found. "
+                f"Open the UI to name them.")
+
+
+def _auto_tags(
+    path: Path,
+    file_type: FileType,
+    metadata: dict | None = None,
+    text_content: str | None = None,
+    image_embedding=None,
+) -> list[str]:
+    from embeddings.tagger import tag_chunk
+    return tag_chunk(
+        path=path,
+        file_type=file_type.value,
+        metadata=metadata or {},
+        text_content=text_content,
+        image_embedding=image_embedding,
+    )
 
 
 def _extract_metadata(path: Path) -> dict:

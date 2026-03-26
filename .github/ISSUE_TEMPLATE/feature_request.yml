@@ -1,0 +1,81 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched [existing issues](https://github.com/sup3rus3r/omnex/issues) and this has not been requested
+          required: true
+        - label: I have read the [build plan](https://github.com/sup3rus3r/omnex/blob/main/docs/BUILDPLAN.md) and this is not already planned
+          required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem does this feature solve? Who is affected and how?
+      placeholder: I'm trying to do X but currently there's no way to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or change you'd like to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Ingestion Pipeline
+        - File Type Support
+        - Embeddings / ML Models
+        - Vector Search / LEANN
+        - Face Clustering / Identity
+        - Query Engine
+        - LLM Integration
+        - Voice + Text Interface
+        - FUSE Filesystem
+        - MCP / Agent API
+        - A2A / Multi-Agent
+        - Performance / Hardware
+        - Docker / Services
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Related build phase (if known)
+      options:
+        - Phase 5 — Audio & Video
+        - Phase 6 — Code Ingestion
+        - Phase 7 — Neural Auto-tagger
+        - Phase 8 — File Watcher
+        - Phase 9 — LLM Chat Layer
+        - Phase 10 — Agentic API / MCP
+        - Phase 11 — FUSE Read
+        - Phase 12 — FUSE Write + Sync
+        - Not phase-specific
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative solutions or workarounds you've considered.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, examples from other tools, architecture considerations, or any other relevant information.

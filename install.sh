@@ -8,7 +8,6 @@
 set -euo pipefail
 
 OMNEX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_MIN="3.11"
 
 print_header() {
   echo ""
@@ -27,42 +26,34 @@ check_command() {
   echo "  ✓ $1 found"
 }
 
-check_python_version() {
-  local version
-  version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-  local major minor required_major required_minor
-  major=$(echo "$version" | cut -d. -f1)
-  minor=$(echo "$version" | cut -d. -f2)
-  required_major=$(echo "$PYTHON_MIN" | cut -d. -f1)
-  required_minor=$(echo "$PYTHON_MIN" | cut -d. -f2)
-
-  if [ "$major" -lt "$required_major" ] || { [ "$major" -eq "$required_major" ] && [ "$minor" -lt "$required_minor" ]; }; then
-    echo "  ✗ Python $PYTHON_MIN+ required, found $version"
-    exit 1
+install_uv() {
+  if command -v uv &>/dev/null; then
+    echo "  ✓ uv found"
+    return
   fi
-  echo "  ✓ Python $version"
+  echo "  Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.cargo/bin:$PATH"
+  echo "  ✓ uv installed"
 }
 
 print_header
 
 echo "Checking prerequisites..."
 check_command python3 "Install Python 3.11+: https://python.org"
-check_python_version
 check_command docker "Install Docker: https://docs.docker.com/engine/install/"
-check_command "docker" "Docker Compose required"
+install_uv
 echo ""
 
 echo "Starting Docker services..."
 cd "$OMNEX_DIR"
 docker compose up -d
-echo "  ✓ MongoDB and Ollama services started"
+echo "  ✓ Ollama service started"
 echo ""
 
-echo "Setting up Python environment..."
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip --quiet
-pip install -r requirements.txt --quiet
+echo "Setting up Python environment with uv..."
+uv venv .venv
+uv pip install -r requirements.txt
 echo "  ✓ Python environment ready"
 echo ""
 
@@ -77,7 +68,7 @@ fi
 echo ""
 
 echo "Downloading ML models (~4 GB, this runs once)..."
-python models/download.py
+uv run python models/download.py
 echo ""
 
 echo "============================================================"
@@ -85,9 +76,8 @@ echo "  Omnex installed successfully."
 echo ""
 echo "  Next steps:"
 echo "  1. Edit .env — set OMNEX_SOURCE_PATH to the drive to index"
-echo "  2. Activate env:  source .venv/bin/activate"
-echo "  3. Start API:     uvicorn api.main:app --host 127.0.0.1 --port 8000"
-echo "  4. Start UI:      cd interface && npm install && npm run dev"
-echo "  5. Open browser:  http://localhost:3000"
+echo "  2. Start API:     uv run uvicorn api.main:app --host 127.0.0.1 --port 8000"
+echo "  3. Start UI:      cd interface && npm install && npm run dev"
+echo "  4. Open browser:  http://localhost:3000"
 echo "============================================================"
 echo ""

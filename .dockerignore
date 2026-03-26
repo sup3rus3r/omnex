@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+.env
+data/
+interface/
+models/ollama/
+docs/
+fuse/
+*.md
+.git
+.gitignore

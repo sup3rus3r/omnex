@@ -15,12 +15,13 @@ beautifulsoup4>=4.12.0        # HTML extraction
 lxml>=5.2.0                   # HTML/XML parser
 
 # ── ML — Embeddings & Models ──────────────────────────────────────────────────
-torch>=2.3.0                  # PyTorch inference backend
-torchvision>=0.18.0
+torch==2.5.1                  # PyTorch — pin to cu124 build, do not auto-upgrade (2.11.0 is broken)
+torchvision>=0.18.0,<0.21.0
 transformers>=4.41.0          # CLIP, CodeBERT, general HuggingFace models
 sentence-transformers>=3.0.0  # MiniLM text embeddings
 openai-whisper>=20231117      # Audio/video transcription
-deepface>=0.0.93              # RetinaFace detection + FaceNet embeddings
+insightface>=0.7.3            # ArcFace detection + 512-dim identity embeddings (ONNX, no TF)
+onnxruntime-gpu>=1.19.0       # ONNX GPU runtime for InsightFace
 
 # ── Vector Index ──────────────────────────────────────────────────────────────
 leann>=0.1.0                  # File-based vector index, 97% storage savings vs Qdrant

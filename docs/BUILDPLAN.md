@@ -49,6 +49,7 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 | 008 | Cold start time is acceptable | 8–96 hours for full drive indexing is expected for a product of this scope. The value proposition justifies it. Frame it as "building your memory", not "indexing". | 2026-03-26 |
 | 009 | FUSE layer is adaptive | WinFsp/cgofuse is the plan. Approach is flexible if platform edge cases require alternatives. Core functionality before OS integration. | 2026-03-26 |
 | 010 | LLM provider abstraction — local, OpenAI, Anthropic | Query/chat layer routes to whichever provider is configured via LLM_PROVIDER env var. Local (Ollama/LM Studio) is default. OpenAI (gpt-5.4) and Anthropic (claude-sonnet-4-6) supported. All embedding/ML models are always local — provider setting only affects the chat/query LLM. | 2026-03-26 |
+| 011 | Omnex as hivemind substrate for multi-agent ecosystems and A2A protocols | The personal memory layer is the foundation. The architecture is designed from day one to serve as the shared semantic memory substrate for multi-agent ecosystems. Agents read/write to the same index via the API. A2A protocol compatibility (MCP server) is a Phase 10 deliverable. The API humans use today is the same API agents will use tomorrow — no separate agent interface. | 2026-03-26 |
 
 ---
 
@@ -73,127 +74,132 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 
 ---
 
-### Phase 1 — Variative Ingestion Core
+### Phase 1 — Variative Ingestion Core ✓ COMPLETE
 **Goal:** User can point Omnex at a file, folder, or drive and it ingests everything.
 
-- [ ] `ingestion/detector.py` — python-magic file type detection (not extension-based)
-- [ ] `ingestion/router.py` — routes detected files to correct processor
-- [ ] `ingestion/hasher.py` — SHA256 content hashing (skip unchanged files)
-- [ ] `ingestion/chunker.py` — chunking strategies: semantic (text), fixed (binary), AST (code)
-- [ ] `ingestion/processors/document.py` — PDF, DOCX, TXT, MD, HTML, XLSX, PPTX
-- [ ] `storage/mongo.py` — MongoDB client, chunk schema, identities schema
-- [ ] `storage/binary_store.py` — GridFS-inspired chunked binary file storage
-- [ ] `storage/leann_store.py` — LEANN index builder for text chunks
-- [ ] `embeddings/text.py` — MiniLM sentence-transformers wrapper
-- [ ] Ingestion scope selector: accept `--path` as file, folder, or drive root
-- [ ] Progress reporting: files processed / total, current file, estimated remaining
+- [x] `ingestion/detector.py` — libmagic content-based type detection (not extension-based)
+- [x] `ingestion/router.py` — routes detected files to correct processor, handles archives recursively
+- [x] `ingestion/hasher.py` — xxHash3-128 content hashing (skip unchanged files)
+- [x] `ingestion/chunker.py` — semantic chunking (text), AST-aware (code), line fallback
+- [x] `ingestion/processors/document.py` — PDF, DOCX, TXT, MD, HTML, XLSX, PPTX
+- [x] `storage/mongo.py` — MongoDB client, chunk schema, identities schema, indexes
+- [x] `storage/binary_store.py` — GridFS-inspired 4MB chunked binary file storage
+- [x] `storage/leann_store.py` — LEANN index wrapper (text, image, video, audio, code)
+- [x] `embeddings/text.py` — MiniLM 384-dim, GPU-aware, normalised embeddings
+- [x] `ingestion/__main__.py` — CLI: `python -m ingestion --path <file|folder|drive>`
+- [x] Progress reporting with parallel workers (ThreadPoolExecutor)
 
-**Exit criteria:** Point at a folder of documents → all text extracted, chunked, embedded, stored in MongoDB + LEANN. Query returns results.
+**Exit criteria:** Point at a folder of documents → all text extracted, chunked, embedded, stored in MongoDB + LEANN. ✓
 
 ---
 
-### Phase 2 — Image Ingestion
+### Phase 2 — Image Ingestion ✓ COMPLETE
 **Goal:** Images are indexed semantically — by scene, content, GPS, date.
 
-- [ ] `ingestion/processors/image.py` — CLIP embedding + EXIF parser
-- [ ] `embeddings/image.py` — CLIP ViT-B/32 wrapper
-- [ ] `storage/leann_store.py` — extend to image index (512-dim CLIP)
-- [ ] Thumbnail generation — 256×256 JPG stored in `/thumbnails/`
-- [ ] GPS metadata extraction → stored in chunk metadata
-- [ ] Date/time metadata extraction (EXIF + file timestamps)
-- [ ] Binary chunk storage for image files
+- [x] `ingestion/processors/image.py` — CLIP embedding + EXIF parser + thumbnail generation, HEIC support
+- [x] `embeddings/image.py` — CLIP ViT-B/32, image→embedding + text→embedding (cross-modal search)
+- [x] `storage/leann_store.py` — image index at 512-dim CLIP (already included in Phase 1)
+- [x] Thumbnail generation — 256×256 JPEG stored via binary_store
+- [x] GPS metadata extraction → lat/lng stored in chunk metadata
+- [x] EXIF date/time, device, orientation extraction
+- [x] Full pipeline wired in `ingestion/__main__.py` — CLIP embed + store + LEANN index
 
-**Exit criteria:** Point at a folder of photos → images indexed with CLIP embeddings, EXIF metadata, thumbnails generated.
+**Exit criteria:** Point at a folder of photos → images indexed, thumbnails generated, cross-modal text queries return images. ✓
 
 ---
 
-### Phase 3 — Query Engine + Basic Interface
+### Phase 3 — Query Engine + Basic Interface ✓ COMPLETE
 **Goal:** First wow moment. User types or speaks a query and gets results.
 
-- [ ] `api/main.py` — FastAPI app initialisation
-- [ ] `api/query_engine.py` — NL query parsing, multi-index LEANN search, result ranking
-- [ ] `api/routes/query.py` — POST /query, POST /query/refine
-- [ ] `api/routes/chunks.py` — GET /chunk/{id}, GET /chunk/{id}/raw
-- [ ] `api/routes/ingest.py` — POST /ingest/trigger, GET /ingest/status
-- [ ] Next.js app scaffold — `interface/`
-- [ ] `QueryBar` component — text input + voice input (Web Speech API)
-- [ ] `ResultGrid` component — masonry layout, thumbnails, document previews
-- [ ] `PreviewPane` component — image viewer, document reader
-- [ ] `IngestionDashboard` component — live progress, scope selector (file/folder/drive)
-- [ ] Scope selector UI — user picks file, folder, or drive to ingest
-- [ ] Voice input — Web Speech API → text → query flow
-- [ ] Cross-modal query — text query searches both text and image indexes
+- [x] `api/main.py` — FastAPI app initialisation
+- [x] `api/query_engine.py` — NL query parsing, multi-index LEANN search, result ranking, LLM provider abstraction (local/OpenAI/Anthropic)
+- [x] `api/routes/query.py` — POST /query, POST /query/refine
+- [x] `api/routes/chunks.py` — GET /chunk/{id}, GET /chunk/{id}/raw, GET /chunk/{id}/thumbnail
+- [x] `api/routes/ingest.py` — POST /ingest/trigger, GET /ingest/status
+- [x] `api/routes/identity.py` — POST /identity/label, GET /identity/pending (Phase 4 ready)
+- [x] Next.js app scaffold — `interface/`
+- [x] `QueryBar` component — text input + voice input (Web Speech API), auto-submit on voice end
+- [x] `ResultGrid` component — image grid + file list, thumbnails, score badges
+- [x] `PreviewPane` component — image/video/audio/code/document viewer + metadata
+- [x] `IngestionDashboard` component — live progress, scope selector (file/folder/drive), expansion prompt
+- [x] Voice input — Web Speech API → text → query flow
+- [x] Cross-modal query — text query searches both text and image LEANN indexes
 
-**Exit criteria:** User opens UI → selects a folder → watches ingestion progress → asks "photos from my holiday" by voice or text → sees relevant images returned.
+**Exit criteria:** User opens UI → selects a folder → watches ingestion progress → asks "photos from my holiday" by voice or text → sees relevant images returned. ✓
 
 ---
 
-### Phase 4 — Face Clustering & Identity
+### Phase 4 — Face Clustering & Identity ✓ COMPLETE
 **Goal:** "Find photos with my sister" works.
 
-- [ ] `ingestion/processors/image.py` — extend with face detection
-- [ ] `embeddings/faces.py` — RetinaFace detection + FaceNet embeddings + DBSCAN clustering
-- [ ] `storage/mongo.py` — extend identities collection
-- [ ] `api/routes/identity.py` — POST /identity/label, GET /identity/pending
-- [ ] `IdentityManager` component — face cluster review, naming UI, correction
-- [ ] Query engine — person-based queries via identity filter
-- [ ] Online learning — new photos auto-classify against known clusters
+- [x] `ingestion/processors/image.py` — extended with RetinaFace detection + crop extraction
+- [x] `embeddings/faces.py` — RetinaFace + FaceNet 128-dim embeddings + DBSCAN clustering + online classification
+- [x] `ingestion/__main__.py` — stores face crops + embeddings, runs clustering after ingestion completes
+- [x] `storage/mongo.py` — face_embeddings collection, identities collection with centroids
+- [x] `api/routes/identity.py` — POST /identity/label, GET /identity/pending, GET /identity/all
+- [x] `IdentityManager` component — face cluster review, circular crop display, name + save + skip
+- [x] Query engine — person name extraction from NL query + identity-to-chunk resolution
+- [x] Online classification — `classify_face()` matches new faces against known clusters with confidence threshold
 
-**Exit criteria:** After image ingestion, user is shown face clusters and names them once. "Photos with Sarah" returns correctly filtered results.
+**Exit criteria:** After image ingestion, user is shown face clusters and names them once. "Photos with Sarah" returns correctly filtered results. ✓
 
 ---
 
-### Phase 5 — Audio & Video Ingestion
+### Phase 5 — Audio & Video Ingestion ✓ COMPLETE
 **Goal:** Spoken content and video are searchable by what was said and what was seen.
 
-- [ ] `ingestion/processors/audio.py` — 30-second segmentation + Whisper transcription
-- [ ] `ingestion/processors/video.py` — frame sampling (1fps) + Whisper transcription + CLIP frames
-- [ ] `embeddings/audio.py` — Whisper wrapper
-- [ ] LEANN indexes for audio chunks and video frames
-- [ ] Video player component in PreviewPane — seeks to relevant timestamp
-- [ ] Cross-modal query — "video where I talked about the project" → transcript search
+- [x] `embeddings/audio.py` — Whisper wrapper: lazy model load, GPU-aware, returns TranscriptSegment list with timestamps + language
+- [x] `ingestion/processors/audio.py` — Whisper transcription → 30-second segment grouping, returns AudioResult
+- [x] `ingestion/processors/video.py` — ffmpeg audio extraction → Whisper transcript + OpenCV 1fps frame sampling (cap MAX_FRAMES=120) + CLIP keyframe embeds + thumbnail at 10%
+- [x] `ingestion/__main__.py` — full audio/video pipeline replacing stub: audio→MiniLM→LEANN AUDIO; video transcript→MiniLM→LEANN AUDIO + keyframes→CLIP→LEANN VIDEO
+- [x] `api/query_engine.py` — LEANN AUDIO searched on all text queries; LEANN VIDEO searched on visual queries
+- [x] `api/routes/chunks.py` — thumbnail route extended: falls back to `{source_hash}_thumb` for video thumbnails
+- [x] `ResultGrid` component — VideoCard grid with thumbnail, play overlay, timecode badge
+- [x] `PreviewPane` component — video/audio players seek to matched segment timestamp on open; duration + language in metadata footer
 
-**Exit criteria:** Point at a folder of videos/recordings → transcripts extracted, frames indexed → spoken content findable by natural language query.
+**Exit criteria:** Point at a folder of videos/recordings → transcripts extracted, frames indexed → spoken content findable by natural language query. ✓
 
 ---
 
-### Phase 6 — Code Ingestion
+### Phase 6 — Code Ingestion ✓ COMPLETE
 **Goal:** Code across all languages is semantically indexed at function/class level.
 
-- [ ] `ingestion/processors/code.py` — AST-aware chunker (function/class boundaries)
-- [ ] `embeddings/code.py` — CodeBERT embeddings wrapper
-- [ ] LEANN code index (768-dim CodeBERT)
-- [ ] Code viewer in PreviewPane — syntax highlighted
-- [ ] Language detection and tagging
+- [x] `embeddings/code.py` — CodeBERT (microsoft/codebert-base) 768-dim CLS embeddings, L2-normalised, GPU-aware, lazy load
+- [x] `ingestion/processors/code.py` — language detection (20+ languages via extension), regex symbol extraction (Python/JS/TS/Go/Rust/Java), per-chunk metadata (symbol_name, symbol_type, start_line, end_line, language)
+- [x] `ingestion/__main__.py` — CODE path now uses CodeBERT instead of MiniLM; attaches language+symbol metadata to every code chunk doc
+- [x] `api/query_engine.py` — NL queries embed via CodeBERT into code vector space (CodeBERT trained on NL+code pairs — cross-lingual NL→code search works natively); CODE index always searched alongside TEXT for non-visual queries
+- [x] `ResultGrid` — code file cards show language badge + symbol name in monospace
+- [x] `PreviewPane` — code viewer shows language badge, symbol type + name, line range header; `<code>` element tagged with `language-*` class for future Prism/highlight.js integration
 
-**Exit criteria:** Point at a code repository → functions and classes indexed → "authentication middleware code" returns relevant code chunks.
+**Exit criteria:** Point at a code repository → functions and classes indexed → "authentication middleware code" returns relevant code chunks. ✓
 
 ---
 
-### Phase 7 — Neural Auto-Tagger
+### Phase 7 — Neural Auto-Tagger ✓ COMPLETE
 **Goal:** Every chunk is automatically tagged. Tags improve as user interacts.
 
-- [ ] `embeddings/tagger.py` — rule-based tagging pipeline (initial)
-- [ ] Initial tags: date, location, scene type, file type, people present, source app
-- [ ] Human-in-the-loop tagging prompts during ingestion (cold start)
-- [ ] Tag storage as metadata fields in MongoDB + LEANN payload filters
-- [ ] Tag-based filtering in query engine
-- [ ] Progressive fine-tuning path — user label behaviour feeds classifier over time
+- [x] `embeddings/tagger.py` — rule-based + CLIP zero-shot tagging pipeline
+- [x] Tag taxonomy: date (year/month/season), type, format, scene (CLIP), topic (keyword), location (GPS), language, temporal, size, path-hints
+- [x] `extract_tag_filters()` — parses NL queries → AND-filter list for query engine
+- [x] Tag-based AND-filtering wired into `api/query_engine.py`
+- [x] `_auto_tags()` wired into all ingestion paths in `ingestion/__main__.py` (image, audio, video transcript, video keyframe, text/code)
 
-**Exit criteria:** After ingestion, every chunk has meaningful tags. Queries like "work documents from last year" use tag filters to narrow results.
+**Exit criteria:** After ingestion, every chunk has meaningful tags. Queries like "work documents from last year" use tag filters to narrow results. ✓
 
 ---
 
-### Phase 8 — File Watcher (Incremental Indexing)
+### Phase 8 — File Watcher (Incremental Indexing) ✓ COMPLETE
 **Goal:** Omnex stays current automatically. New files indexed as they appear.
 
-- [ ] `ingestion/watcher.py` — watchdog file system monitor
-- [ ] Change detection — new, modified, deleted file events
-- [ ] Content hash comparison — skip unchanged files
-- [ ] Background processing queue — new files processed without interrupting queries
-- [ ] Deleted file handling — mark chunks as removed in index
+- [x] `ingestion/watcher.py` — watchdog-based file system monitor with debounce (3s)
+- [x] Change detection — created/modified/moved/deleted file events
+- [x] Content hash comparison — skip unchanged files (via existing hasher)
+- [x] Background processing queue — ThreadPoolExecutor, non-blocking
+- [x] Deleted file handling — removes chunks + LEANN vectors for deleted source paths
+- [x] `WatcherHandle` API — `start_watcher()` / `stop_watcher()` for embedding in other processes
+- [x] CLI: `python -m ingestion.watcher --path <dir>`
 
-**Exit criteria:** Add a file to a watched folder → it appears in search results within seconds without manual re-trigger.
+**Exit criteria:** Add a file to a watched folder → it appears in search results within seconds without manual re-trigger. ✓
 
 ---
 
@@ -212,18 +218,29 @@ Omnex is not a search tool. It is the **memory substrate for the agentic era** �
 
 ---
 
-### Phase 10 — Agentic API Layer
-**Goal:** External agents can query and interact with Omnex programmatically.
+### Phase 10 — Agentic API Layer + Remote Access
+**Goal:** External agents can query and interact with Omnex programmatically from anywhere.
 
-- [ ] Document all API endpoints formally (OpenAPI spec)
-- [ ] API key / local auth for agent access
-- [ ] Agent-oriented endpoints — structured JSON responses optimised for agent consumption
-- [ ] Webhook support — agents subscribe to new data events
-- [ ] MCP (Model Context Protocol) server — Omnex as an MCP tool for Claude, GPT, etc.
-- [ ] Rate limiting and queue management for concurrent agent queries
-- [ ] Developer documentation — how to build agents on Omnex
+**Architecture decisions:**
+- Expose as MCP (Model Context Protocol) server — compatible with Claude Desktop, Cursor, any MCP client
+- Remote access via ngrok tunnel (auto-managed by Omnex) — no port forwarding required
+- Signed media URLs — agents can fetch images/video via time-limited tokens
+- API key auth — every external request requires `Authorization: Bearer <key>`
 
-**Exit criteria:** An external agent (Claude, custom script) can query Omnex via API, receive structured results, and act on them without human involvement.
+**Tasks:**
+- [ ] API key model in MongoDB + auth middleware for FastAPI
+- [ ] `POST /auth/keys` — generate named API keys, `DELETE /auth/keys/{id}` — revoke
+- [ ] `api/routes/mcp.py` — MCP server endpoint (`POST /mcp`) with tools: `recall`, `ingest`, `remember`, `stats`
+- [ ] MCP tool definitions — JSON schema, descriptions, input validation
+- [ ] `GET /media/{chunk_id}?token=<signed>` — signed URL media endpoint (images, video, audio)
+- [ ] Token signing — HMAC-SHA256, 1-hour expiry, chunk_id bound
+- [ ] ngrok Python SDK integration — auto-tunnel on startup if `NGROK_AUTHTOKEN` set in `.env`
+- [ ] `OMNEX_PUBLIC_URL` env var — used to build correct media URLs for remote agents
+- [ ] Remote Access UI page — public endpoint display, API key management, connected agents log
+- [ ] Rate limiting — `slowapi` per-key rate limiting on `/mcp` and `/query`
+- [ ] Webhook support — agents subscribe to new-chunk events via `POST /webhooks`
+
+**Exit criteria:** Claude Desktop connects to Omnex as an MCP tool. Remote agent sends `recall("beach photos 2022")` over ngrok → receives results with signed image URLs it can fetch.
 
 ---
 
@@ -344,7 +361,7 @@ Same backend. Same memory. Two consumers. Humans now. Agents always.
 | Q002 | Multi-user / family support? | Separate identity spaces on same machine? Shared identity clusters? |
 | Q003 | Mobile ingestion path? | Photos from phone — direct WiFi sync to Omnex instance? |
 | Q004 | Encryption at rest on destination drive? | User expectation for sensitive data. Performance cost? |
-| Q005 | MCP server priority? | Claude/GPT agent integration — does this come before or after FUSE? |
+| ~~Q005~~ | ~~MCP server priority?~~ | **Resolved:** MCP server is Phase 10, before FUSE. Remote access via ngrok auto-tunnel. Signed media URLs for binary content delivery to remote agents. |
 
 ---
 

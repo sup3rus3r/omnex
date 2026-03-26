@@ -1,22 +1,52 @@
-# Omnex
+<div align="center">
 
-### *Everything, indexed. Nothing lost. No file system.*
+<img src="docs/images/image.png" alt="Omnex" width="600" />
 
-> **The AI OS memory layer — local-first, open source, agentic-ready.**
->
-> Built for the era when AI has been fully adopted and the file system as we know it becomes legacy.
+### The AI Memory Layer for Your Personal Data
+
+Index everything you have — documents, photos, video, audio, code — and recall it in plain language. No folders. No filenames. No keyword search. Just memory.
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/sup3rus3r/omnex?style=social)](https://github.com/sup3rus3r/omnex/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/sup3rus3r/omnex?style=social)](https://github.com/sup3rus3r/omnex/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/sup3rus3r/omnex)](https://github.com/sup3rus3r/omnex/issues)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-14-000000?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.5-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 
 ---
 
-## What is Omnex?
+**If you find this project useful, please consider giving it a star!** It helps others discover it and motivates continued development.
 
-The way humans store and retrieve data has not fundamentally changed since the 1970s. Files live in folders. Folders live in drives. You remember where you put things — or you don't. Search is keyword-based. Video and audio are completely unsearchable. Your data has no intelligence.
+[**Give it a Star**](https://github.com/sup3rus3r/omnex) ⭐
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Why Omnex?](#why-omnex)
+- [Features](#features)
+- [First Run](#first-run)
+- [Quickstart](#quickstart)
+- [Manual Install](#manual-install)
+- [Tech Stack](#tech-stack)
+- [Vision](#vision)
+- [Current Status](#current-status)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Why Omnex?
+
+The way humans store and retrieve personal data has not fundamentally changed since the 1970s. Files. Folders. Drives. You remember where you put things — or you don't. Search is keyword-based. Video and audio are completely unsearchable. Your data has no intelligence.
 
 **Omnex changes this at the foundation.**
-
-Omnex ingests your data — every document, image, video, audio file, and line of code — and builds a semantic memory layer on a second drive. Everything is chunked, embedded, and indexed by meaning. You interact with your data the way you access a memory: by context, time, people, place, emotion. Not by filename or folder path.
-
-You never search for a file again. You recall it.
 
 > *"Find the contract I signed around the time we moved."*
 > *"Show me photos with my sister from the Cape Town trip."*
@@ -25,64 +55,188 @@ You never search for a file again. You recall it.
 
 These are not search queries. They are memories. Omnex retrieves them.
 
----
-
-## Why This Matters
-
-We are at an inflection point. AI agents are becoming capable of acting on our behalf — scheduling, researching, deciding, creating. For agents to work effectively, they need a memory layer that isn't a hierarchical folder structure built for a pre-AI world.
-
-Omnex is that layer.
-
-- **For humans today** — a voice-first, conversational interface to all your personal data
-- **For agents tomorrow** — a structured, queryable API that AI can call to recall, reason over, and act on your data
-- **For the AI OS era** — a FUSE virtual filesystem that replaces the traditional file system at the OS level, transparently
-
-This is not RAG bolted onto a file browser. This is the memory substrate the agentic era requires. It doesn't exist yet. We are building it first.
+- **No cloud dependency** — All models, processing, and storage run on your hardware. Your data never leaves your machine.
+- **Every file type** — Documents, PDFs, images, video, audio, code, spreadsheets, presentations. If it exists on your drive, Omnex understands it.
+- **Agent-ready API** — The same backend humans query, AI agents can call. Claude, GPT, and custom agents get a structured memory API out of the box.
+- **Self-hosted and open source** — AGPL-3.0. No telemetry. No lock-in. Runs entirely on your own hardware.
 
 ---
 
-## Core Principles
+## Features
 
-| Principle | What it means |
+### Semantic Text & Document Indexing
+
+Documents, PDFs, Markdown, Word, Excel, PowerPoint, HTML, and plain text are chunked, embedded with MiniLM (384-dim), and stored in the LEANN vector index. Query by meaning, not keyword.
+
+### Image Understanding
+
+Images are embedded with CLIP (ViT-B/32). EXIF metadata, timestamps, and GPS coordinates are extracted and indexed alongside the visual embedding. Thumbnails are generated for every image.
+
+### Audio & Video Transcription
+
+Audio and video files are transcribed with Whisper (base). Transcripts are chunked by segment with timestamps, embedded with MiniLM, and indexed — making every spoken word searchable.
+
+### Video Keyframe Analysis
+
+Video keyframes are extracted and embedded with CLIP, giving Omnex visual understanding of video content independent of the audio track.
+
+### Code Understanding
+
+Source code is indexed with CodeBERT embeddings (512-dim). Functions, classes, and symbol metadata are extracted and stored — enabling semantic code search across your entire codebase.
+
+### Face Detection & Identity Clustering
+
+Faces in photos and video are detected with InsightFace (ArcFace, 512-dim embeddings) and clustered into identities with DBSCAN. Name an identity once, recall by person forever.
+
+### Neural Auto-Tagger
+
+Every chunk is automatically tagged during ingestion using the embedding model — no manual labelling required. Tags are used as metadata filters at query time.
+
+### File Watcher — Incremental Indexing
+
+Drop new files into a watched folder and they are indexed automatically. No manual re-runs. Changes and deletions are handled incrementally.
+
+### Natural Language Query Engine
+
+Queries are parsed into multi-stage vector searches across all indexes (text, image, audio, video, code), filtered by metadata (date, file type, tags, identity), re-ranked for precision, and assembled into context for an LLM response.
+
+### Multi-Provider LLM Support
+
+| Provider | Models | Type |
+|---|---|---|
+| **Anthropic** | Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5 | Cloud |
+| **OpenAI** | GPT-4o, GPT-4o-mini | Cloud |
+| **Ollama** | Phi-3, Gemma 3, Llama 3.2 — any local model | Local |
+
+---
+
+## First Run
+
+<div align="center">
+<img src="docs/images/setup.png" alt="Omnex — Loading intelligence" width="500" />
+</div>
+
+On first launch, Omnex downloads the required AI models (~1.4 GB total). This happens once. All models are cached in a Docker volume and loaded on every subsequent start. No internet connection required after setup.
+
+| Model | Purpose | Size |
+|---|---|---|
+| Language Model | Text embeddings (MiniLM) | ~90 MB |
+| Vision Model | Image + video embeddings (CLIP) | ~350 MB |
+| Code Model | Code understanding (CodeBERT) | ~500 MB |
+| Audio Model | Speech transcription (Whisper) | ~140 MB |
+| Identity Model | Face detection + clustering (InsightFace) | ~320 MB |
+
+---
+
+## Quickstart
+
+**The only prerequisite is [Docker Desktop](https://www.docker.com/products/docker-desktop/).**
+
+**1. Clone**
+
+```bash
+git clone https://github.com/sup3rus3r/omnex
+cd omnex
+```
+
+**2. Configure**
+
+Create `.env` in the project root:
+
+```bash
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_key_here
+ANTHROPIC_MODEL=claude-sonnet-4-6
+```
+
+**3. Start**
+
+```bash
+docker compose up --build
+```
+
+First build downloads PyTorch and all ML dependencies (~2–3 GB, ~10–15 minutes). Subsequent starts take seconds.
+
+**4. Open**
+
+| Service | URL |
 |---|---|
-| **Local-first** | All models, processing, and storage run on your hardware. No cloud. No telemetry. |
-| **Privacy by design** | Your data never leaves your machine. Not optional. |
-| **Open source** | AGPL-3.0. Community-built from day one. No commercial lock-in. |
-| **Voice-first** | Voice and text are equal input modalities. Neither is an afterthought. |
-| **Agentic-ready** | The API is a first-class citizen. Humans use the UI. Agents use the API. Same backend. |
-| **Hardware inclusive** | Runs on modest hardware. GPU optional. Designed for real people, not just ML labs. |
-| **Progressive enhancement** | Start with a single folder. Expand to a full drive. Grow into an OS memory layer. |
+| UI | [http://localhost:3007](http://localhost:3007) |
+| API | [http://localhost:8001](http://localhost:8001) |
+| API docs | [http://localhost:8001/docs](http://localhost:8001/docs) |
+
+Navigate to **Ingest** in the sidebar, drop files or a folder, and click **Start ingestion**. Then switch to **Recall** and start querying.
 
 ---
 
-## How It Works
+## Manual Install
 
-```
-SOURCE DRIVE  →  [Ingestion Pipeline]  →  [ML Processing Layer]
-                        ↓                           ↓
-              [Storage: MongoDB + LEANN + Binary Chunk Store]
-                        ↓
-                [Query Engine (FastAPI)]
-                        ↓
-         ┌──────────────┴──────────────┐
-         │                             │
-  [Voice + Text UI            [Agent API / MCP Server]
-   (Next.js)]                  (Claude, GPT, custom agents)
-         │
-  [FUSE Virtual Filesystem]  ←→  OS / Applications
+> For contributors developing the Python backend. Docker is strongly recommended for all other use cases — it eliminates all platform-specific dependency issues on Windows.
+
+**Prerequisites:** Python 3.11+, Node.js 20+, MongoDB 7.0 on port 27017
+
+```bash
+git clone https://github.com/sup3rus3r/omnex
+cd omnex
+python -m venv .venv
 ```
 
-**Ingestion Pipeline** — Detects file types by content (not extension), routes to the right processor, chunks everything, hashes for deduplication. Supports file, folder, or full drive scope — start small, expand as you build confidence.
+```bash
+# Windows — from a plain PowerShell (no conda/Anaconda active)
+.venv\Scripts\pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install insightface onnxruntime-gpu
+```
 
-**ML Processing Layer** — Runs entirely on-device. Text embeddings (MiniLM), image/video understanding (CLIP), face clustering (RetinaFace + FaceNet), transcription (Whisper), code understanding (CodeBERT). No API calls. No data leaving your machine.
+```bash
+# Linux/macOS
+.venv/bin/pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install insightface onnxruntime
+```
 
-**Storage Layer** — MongoDB for metadata and relationships. LEANN for vector indexing — achieving 97% storage reduction over conventional vector databases, meaning your destination drive can match or be smaller than your source. Content-addressed binary chunk store for raw data.
+```bash
+cd interface && npm install && cd ..
+```
 
-**Query Engine** — Natural language parsed into multi-stage vector searches with metadata filtering. Results re-ranked for precision. Context assembled and passed to a local LLM (Ollama) for conversational responses.
+Create `interface/.env.local`:
 
-**Voice + Text Interface** — A conversation with your data, not a file browser. Ask anything. Refine by voice. Results surface with full context — thumbnails, previews, document snippets, video timestamps.
+```
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8001
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_key_here
+ANTHROPIC_MODEL=claude-sonnet-4-6
+```
 
-**FUSE Virtual Filesystem** — Long-term: Omnex mounts as a virtual drive. Folders like `People/Sarah/`, `Places/Cape Town/`, `By Year/2023/` are generated from the semantic index, not from physical directories. Applications interact with it transparently.
+```bash
+# Terminal 1 — API (plain PowerShell, not Anaconda)
+.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8001
+
+# Terminal 2 — UI
+cd interface && npm run dev
+```
+
+### Troubleshooting
+
+**"DLL load failed" / torch crash on Windows**
+Anaconda is on your PATH. Open a plain PowerShell and restart the API. Or use Docker.
+
+**"torch 2.11.0" / broken torch version**
+`uv` auto-resolved to a broken version. Fix:
+```
+.venv\Scripts\pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+```
+
+**"InsightFace not installed: Unable to import onnxruntime"**
+```
+.venv\Scripts\pip install insightface onnxruntime-gpu
+```
+
+**Ingestion stuck at "Running" forever**
+On Windows with Anaconda on PATH, sentence_transformers crashes silently. Use Docker. Without Anaconda, the first ingestion takes ~30s to load the model cold.
+
+**MongoDB connection error**
+Check: `mongosh --eval "db.adminCommand('ping')"`. With Docker, no local MongoDB needed.
 
 ---
 
@@ -90,129 +244,88 @@ SOURCE DRIVE  →  [Ingestion Pipeline]  →  [ML Processing Layer]
 
 | Layer | Technology |
 |---|---|
-| Ingestion Pipeline | Python — python-magic, watchdog, PyMuPDF, python-docx |
-| ML Processing | Python — sentence-transformers, CLIP, Whisper, DeepFace, CodeBERT, PyTorch |
-| Vector Index | LEANN — file-based, 97% storage savings vs Qdrant, no server process |
-| Metadata Store | MongoDB |
-| Query & API Backend | FastAPI + Uvicorn |
-| Voice + Text Interface | Next.js + Web Speech API + Browser TTS |
-| Local LLM | Ollama — Phi-3 Mini, Gemma 3 2B, or Llama 3.2 |
-| FUSE Layer | Go — cgofuse (Linux/libfuse, Windows/WinFsp) |
-| Services | Docker Compose |
+| Backend | Python 3.11, FastAPI, Uvicorn |
+| Text Embeddings | sentence-transformers — MiniLM-L6-v2 (384-dim) |
+| Image / Video Embeddings | CLIP ViT-B/32 (512-dim) |
+| Audio Transcription | OpenAI Whisper (base) |
+| Code Embeddings | CodeBERT (512-dim) |
+| Face Detection | InsightFace — ArcFace buffalo_l (512-dim) |
+| Vector Index | LEANN — file-based, 97% storage savings vs Qdrant |
+| Metadata Store | MongoDB 7 |
+| Binary Store | Content-addressed chunk store |
+| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS, Framer Motion |
+| LLM | Anthropic / OpenAI / Ollama (configurable) |
+| Infrastructure | Docker Compose |
 
 ---
 
-## Minimum Hardware
+## Vision
 
-| Component | Minimum | Recommended |
+We are at an inflection point. AI agents are becoming capable of acting on our behalf — scheduling, researching, deciding, creating. For this to work, the underlying data layer needs to be rebuilt from scratch. Not a keyword search engine with an AI coat of paint. A genuine memory substrate — one that humans and agents share equally.
+
+**Omnex is that substrate.**
+
+The roadmap from today to where this ends up:
+
+| Stage | What it means | Status |
 |---|---|---|
-| CPU | 4-core x86_64 | 8-core modern CPU |
-| RAM | 8 GB | 16–32 GB |
-| GPU | None (CPU-only mode) | NVIDIA 8GB+ VRAM (CUDA) or AMD (ROCm) |
-| Source Drive | Any size | SSD preferred |
-| Destination Drive | Same size as source | 1.2x source, SSD |
-| OS | Windows 10+ or Ubuntu 22.04+ | Ubuntu 24.04 LTS |
+| **Personal memory** | Single user. All file types. Semantic recall across everything you have. | Now |
+| **Agent memory** | AI agents read and write to your Omnex index. Human and agent share one memory. | Phase 10 |
+| **Multi-agent substrate** | A swarm of specialised agents operates on a shared Omnex instance. Collective intelligence across a team or organisation. | Planned |
+| **Federated hivemind** | Multiple Omnex instances with opted-in sharing. Distributed semantic memory across users, devices, organisations. | Planned |
+| **AI OS layer** | Omnex mounts as a FUSE virtual filesystem. `People/Sarah/`, `Places/Cape Town/`, `By Year/2023/` are generated from the semantic index, not physical directories. The traditional file system is legacy. | Planned |
+
+The architecture for the first two stages is being built now. The API agents will call is the same API humans use today. The foundation does not change — the scale does.
+
+Big tech will build their version of this. It will be cloud-first, walled-garden, and trained on your data without your meaningful consent. That version already exists in pieces — Google Photos, iCloud, Microsoft Recall. Siloed, proprietary, not agentic.
+
+Omnex is the open alternative. Local. Private. Agentic-ready. Built for humans and agents equally.
+
+**The file system had a good run. Help us build what comes next.**
 
 ---
 
 ## Current Status
 
-Omnex is in active early development. The architecture is defined. The build plan is public. We are assembling the team now.
-
 | Phase | Milestone | Status |
 |---|---|---|
-| 0 | Foundation — repo, docker, installers | In progress |
-| 1 | Ingestion — text & documents | Planned |
-| 2 | Ingestion — images | Planned |
-| 3 | Query engine + basic UI + voice input | Planned |
-| 4 | Face clustering & identity | Planned |
-| 5 | Audio & video ingestion | Planned |
-| 6 | Code ingestion | Planned |
-| 7 | Neural auto-tagger | Planned |
-| 8 | File watcher — incremental indexing | Planned |
-| 9 | LLM chat layer + voice output | Planned |
-| 10 | Agentic API + MCP server | Planned |
-| 11 | FUSE filesystem — read | Planned |
-| 12 | FUSE filesystem — write + sync | Planned |
+| 0 | Foundation — repo, Docker, installers | ✅ |
+| 1 | Text + document ingestion | ✅ |
+| 2 | Image ingestion + CLIP embeddings | ✅ |
+| 3 | Query engine + UI + voice input | ✅ |
+| 4 | Face clustering + identity | ✅ |
+| 5 | Audio + video ingestion | ✅ |
+| 6 | Code ingestion + CodeBERT | ✅ |
+| 7 | Neural auto-tagger | ✅ |
+| 8 | File watcher — incremental indexing | ✅ |
+| 9 | LLM chat layer + voice output | 🔄 In progress |
+| 10 | Remote access — MCP server + ngrok + API keys | 🔄 In progress |
+| 11 | FUSE filesystem — read | 📋 Planned |
+| 12 | FUSE filesystem — write + sync | 📋 Planned |
 
-Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-Full build plan: [docs/BUILDPLAN.md](docs/BUILDPLAN.md)
-Implementation reference: [docs/TECHDOC.md](docs/TECHDOC.md)
+Full architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Build plan: [docs/BUILDPLAN.md](docs/BUILDPLAN.md) · Implementation reference: [docs/TECHDOC.md](docs/TECHDOC.md)
 
 ---
 
-## We Are Looking for Collaborators
+## Contributing
 
-Omnex is an ambitious, open source project building something that does not exist yet. We are looking for people who want to work on something that matters — not another CRUD app, not another wrapper around someone else's API.
+Omnex is open source and actively looking for contributors. We are building something that does not exist yet — not another CRUD app, not another wrapper around someone else's API.
 
-**We need people who can contribute to:**
+**We need people across:**
 
-### Core Infrastructure
-- **Python engineers** — ingestion pipeline, ML model integration, FastAPI backend
-- **ML engineers** — embedding pipelines, face clustering, model optimization, quantization
-- **Go engineers** — FUSE virtual filesystem, OS-level integration, cgofuse
+- **Python** — ingestion pipeline, ML model integration, FastAPI backend
+- **ML engineering** — embedding pipelines, model optimisation, quantization
+- **Go** — FUSE virtual filesystem, OS-level integration
+- **TypeScript / React** — UI, voice interface, real-time dashboard
+- **NLP** — query parsing, result re-ranking, cross-encoder retrieval
+- **DevOps** — packaging, Linux, Windows, macOS
 
-### Intelligence Layer
-- **NLP engineers** — query parsing, result ranking, cross-encoder re-ranking
-- **Vector search engineers** — LEANN optimization, multi-index search, hybrid retrieval
-- **LLM integration** — Ollama integration, context assembly, conversational refinement
+**To get started:**
 
-### Interface
-- **Frontend engineers** — Next.js, voice UI, real-time ingestion dashboard, masonry result grid
-- **UX designers** — designing a conversation interface for data, not a file browser
-
-### Platform & DevOps
-- **Windows engineers** — WinFsp integration, Windows-specific edge cases, testing
-- **Linux engineers** — libfuse, system service configuration, packaging (deb/rpm/flatpak)
-- **macOS engineers** — macFUSE path (future milestone)
-
-### Community
-- **Technical writers** — architecture documentation, contributor guides, API docs
-- **Community builders** — Discord, GitHub discussions, contributor onboarding
-
----
-
-## What We Value in Contributors
-
-- You care about **privacy and local-first software**
-- You want to build **infrastructure, not features** — this is a platform
-- You think in **systems** — how layers connect, how data flows, where things fail
-- You're comfortable with **ambiguity and early-stage work** — we are defining the category
-- You believe the **file system era is ending** and want to build what comes next
-
-You do not need to be an expert in every layer. Deep knowledge in one area with curiosity about the others is enough.
-
----
-
-## Getting Started as a Contributor
-
-1. **Read the architecture doc** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Understand the system before writing a line of code.
-2. **Read the build plan** — [docs/BUILDPLAN.md](docs/BUILDPLAN.md). Find the phase that matches your skills.
-3. **Open an issue** — introduce yourself, tell us what you want to build or fix.
-4. **Join the discussion** — GitHub Discussions for architectural questions and decisions.
-5. **Pick a task** — issues are labelled by phase, skill, and difficulty.
-
-**First contribution?** Look for issues tagged `good-first-issue`. These are well-defined, self-contained tasks that don't require understanding the full system.
-
----
-
-## Repository Structure
-
-```
-omnex/
-├── ingestion/          # Python — file detection, routing, chunking, processors
-├── embeddings/         # Python — all ML model wrappers
-├── storage/            # Python — MongoDB, LEANN, binary chunk store
-├── api/                # FastAPI backend — query engine, all routes
-├── fuse/               # Go — FUSE virtual filesystem
-├── interface/          # Next.js — voice + text UI
-├── models/             # Model download scripts + configs
-├── docs/               # Architecture, build plan, implementation reference
-├── docker-compose.yml
-├── requirements.txt
-├── install.sh
-└── install.ps1
-```
+1. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — understand the system before writing code
+2. Read [docs/BUILDPLAN.md](docs/BUILDPLAN.md) — find the phase that matches your skills
+3. [Open an issue](https://github.com/sup3rus3r/omnex/issues) — introduce yourself, tell us what you want to build
+4. Look for `good-first-issue` labels for well-scoped starting points
 
 ---
 
@@ -220,26 +333,14 @@ omnex/
 
 Omnex is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
-This means:
-- You can use, modify, and distribute Omnex freely
-- If you deploy a modified version as a service, you must open source your modifications
-- The project stays open — forever
-
-We chose AGPL deliberately. Omnex is infrastructure. Infrastructure should be open.
+Use it, modify it, deploy it. If you run a modified version as a service, open source your changes. The project stays open — forever.
 
 ---
 
-## The Bigger Picture
+<div align="center">
 
-The cloud era gave us convenience at the cost of privacy and control. The AI era will give us intelligence — but only if the data layer is built correctly from the start.
+*[github.com/sup3rus3r/omnex](https://github.com/sup3rus3r/omnex)*
 
-Big tech will build their version of this. It will be cloud-first, walled-garden, and trained on your data without your meaningful consent. That version already exists in pieces — Google Photos, iCloud, Microsoft Recall. They are siloed, proprietary, and not agentic.
+*Local-first · Open source · Agentic-ready · AGPL-3.0*
 
-Omnex is the open alternative. Local. Private. Agentic-ready. Built by the community, for everyone.
-
-**The file system had a good run. Its time is ending. Help us build what comes next.**
-
----
-
-*Omnex — github.com/sup3rus3r/omnex*
-*AGPL-3.0 | Local-first | Open source | Agentic-ready*
+</div>

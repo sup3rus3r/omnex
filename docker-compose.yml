@@ -1,26 +1,74 @@
-version: '3.9'
-
 services:
-  mongodb:
-    image: mongo:7
-    container_name: omnex-mongo
+
+  # ── Omnex API ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omnex-api
     restart: unless-stopped
-    volumes:
-      - ./data/mongo:/data/db
+    networks:
+      - omnex
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - '127.0.0.1:27017:27017'
+      - '127.0.0.1:8001:8000'
+    volumes:
+      - omnex-models:/data/models
+      - omnex-data:/data/leann
+      - omnex-binary:/data/binary
+      - ./api:/app/api
+      - ./ingestion:/app/ingestion
+      - ./embeddings:/app/embeddings
+      - ./storage:/app/storage
     environment:
-      MONGO_INITDB_DATABASE: omnex
+      MONGO_URI: mongodb://host.docker.internal:27017
+      MONGO_DB: omnex
+      OMNEX_DATA_PATH: /data
+      LEANN_INDEX_PATH: /data/leann
+      HF_HOME: /data/models/huggingface
+      WHISPER_CACHE: /data/models/whisper
+      TRANSFORMERS_OFFLINE: "0"
+      HF_DATASETS_OFFLINE: "0"
+      GPU_ENABLED: "false"
+      LOG_LEVEL: INFO
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+    env_file:
+      - .env
     healthcheck:
-      test: ['CMD', 'mongosh', '--eval', 'db.adminCommand("ping")']
-      interval: 10s
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
+  # ── Next.js Frontend ───────────────────────────────────────────────────────
+  interface:
+    build:
+      context: ./interface
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8001
+    container_name: omnex-interface
+    restart: unless-stopped
+    networks:
+      - omnex
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:3007:3000'
+    env_file:
+      - ./interface/.env.local
+
+  # ── Ollama (optional local LLM) ────────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
     container_name: omnex-ollama
     restart: unless-stopped
+    networks:
+      - omnex
     volumes:
       - ./models/ollama:/root/.ollama
     ports:
@@ -30,14 +78,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # GPU support — remove deploy block if no NVIDIA GPU
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # Uncomment for NVIDIA GPU passthrough:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+networks:
+  omnex:
+    driver: bridge
 
 volumes:
-  mongo_data:
+  omnex-models:
+  omnex-data:
+  omnex-binary:

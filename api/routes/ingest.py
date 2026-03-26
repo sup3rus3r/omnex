@@ -1,0 +1,173 @@
+"""
+Omnex — Ingestion Routes
+POST /ingest/trigger  — Trigger ingestion for a server-side path
+POST /ingest/upload   — Upload files directly from the browser, then ingest
+GET  /ingest/status   — Current ingestion progress
+"""
+
+from __future__ import annotations
+
+import tempfile
+import shutil
+import threading
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import Form
+from typing import List
+from pydantic import BaseModel
+
+router = APIRouter()
+
+# Track active ingestion so it can be cancelled
+_active_cancel = threading.Event()
+_active_path: str | None = None
+
+
+class IngestRequest(BaseModel):
+    path:    str
+    workers: int = 4
+
+
+@router.post("/upload")
+async def upload_and_ingest(
+    files: List[UploadFile] = File(...),
+    workers: int = Form(default=4),
+):
+    """
+    Accept file uploads from the browser and ingest them.
+    Files are saved to a temp directory, ingested, then cleaned up.
+    """
+    tmp_dir = Path(tempfile.mkdtemp(prefix="omnex_upload_"))
+    saved: list[Path] = []
+
+    try:
+        for upload in files:
+            rel = upload.filename or "file"
+            dest = tmp_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with dest.open("wb") as f:
+                shutil.copyfileobj(upload.file, f)
+            saved.append(dest)
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+    ingest_path = saved[0] if len(saved) == 1 else tmp_dir
+
+    # Use threading.Thread directly — BackgroundTasks silently drops exceptions
+    t = threading.Thread(
+        target=_run_ingestion_and_cleanup,
+        args=(str(ingest_path), workers, tmp_dir),
+        daemon=True,
+        name="omnex-ingest-upload",
+    )
+    t.start()
+
+    return {
+        "status":  "started",
+        "path":    str(ingest_path),
+        "files":   len(saved),
+        "workers": workers,
+    }
+
+
+@router.post("/trigger")
+async def trigger_ingest(req: IngestRequest):
+    """
+    Trigger ingestion for a file, folder, or drive path.
+    Runs in the background — returns immediately.
+    Poll /ingest/status for progress.
+    """
+    source = Path(req.path)
+    if not source.exists():
+        raise HTTPException(status_code=400, detail=f"Path does not exist: {req.path}")
+
+    threading.Thread(
+        target=_run_ingestion,
+        args=(req.path, req.workers),
+        daemon=True,
+        name="omnex-ingest-trigger",
+    ).start()
+
+    return {
+        "status":  "started",
+        "path":    req.path,
+        "workers": req.workers,
+        "message": f"Ingestion started. Poll /ingest/status?path={req.path} for progress.",
+    }
+
+
+@router.get("/status")
+async def ingest_status(path: str | None = None):
+    """
+    Return ingestion progress.
+    If path is provided, return status for that specific path.
+    Otherwise return all active/completed ingestion records.
+    """
+    from storage.mongo import get_db
+    db = get_db()
+
+    query = {"source_path": path} if path else {}
+    records = list(db["ingestion_state"].find(query, {"_id": 0}))
+
+    # Convert datetime objects to ISO strings for JSON serialisation
+    for r in records:
+        for k, v in r.items():
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+
+    if path:
+        if not records:
+            return {"status": "not_started", "path": path, "total_files": 0, "processed": 0, "indexed": 0, "skipped": 0, "errors": 0}
+        return records[0]
+
+    return {"ingestion": records}
+
+
+@router.post("/cancel")
+async def cancel_ingest():
+    """Signal the active ingestion run to stop after its current file."""
+    global _active_path
+    if _active_cancel.is_set() or _active_path is None:
+        return {"status": "no_active_ingestion"}
+    _active_cancel.set()
+    return {"status": "cancel_requested", "path": _active_path}
+
+
+def _run_ingestion(path: str, workers: int) -> None:
+    """Run the ingestion pipeline in a background thread."""
+    import logging, traceback
+    log = logging.getLogger("omnex.ingest.bg")
+    global _active_path
+    _active_cancel.clear()
+    _active_path = path
+    try:
+        from ingestion.__main__ import run
+        run(Path(path), workers=workers, cancel_event=_active_cancel)
+    except Exception:
+        log.error(f"Ingestion failed for {path}:\n{traceback.format_exc()}")
+    finally:
+        _active_path = None
+
+
+def _run_ingestion_and_cleanup(path: str, workers: int, tmp_dir: Path) -> None:
+    """Run ingestion on uploaded files, then remove the temp directory."""
+    import logging, traceback, sys
+    log = logging.getLogger("omnex.ingest.bg")
+    global _active_path
+    _active_cancel.clear()
+    _active_path = path
+    print(f"[ingest] background thread started for {path}", flush=True, file=sys.stderr)
+    try:
+        from ingestion.__main__ import run
+        print(f"[ingest] calling run()", flush=True, file=sys.stderr)
+        run(Path(path), workers=workers, cancel_event=_active_cancel)
+        print(f"[ingest] run() completed", flush=True, file=sys.stderr)
+    except Exception:
+        msg = traceback.format_exc()
+        print(f"[ingest] FAILED:\n{msg}", flush=True, file=sys.stderr)
+        log.error(f"Ingestion failed for {path}:\n{msg}")
+    finally:
+        _active_path = None
+        shutil.rmtree(tmp_dir, ignore_errors=True)

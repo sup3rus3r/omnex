@@ -136,6 +136,25 @@ def detect(path: Path) -> tuple[FileType, str]:
     return file_type, mime
 
 
+# Extension overrides for types missing from the Windows registry
+_EXT_MIME: dict[str, str] = {
+    ".md":       "text/markdown",
+    ".markdown": "text/markdown",
+    ".rst":      "text/plain",
+    ".txt":      "text/plain",
+    ".log":      "text/plain",
+    ".jsonl":    "application/json",
+    ".ndjson":   "application/json",
+    ".geojson":  "application/json",
+    ".webp":     "image/webp",
+    ".heic":     "image/heic",
+    ".heif":     "image/heif",
+    ".m4a":      "audio/x-m4a",
+    ".opus":     "audio/ogg",
+    ".mkv":      "video/x-matroska",
+}
+
+
 def _get_mime(path: Path) -> str:
     """Get MIME type using libmagic if available, else mimetypes fallback."""
     if _MAGIC_AVAILABLE:
@@ -144,6 +163,9 @@ def _get_mime(path: Path) -> str:
         except Exception:
             pass
     # Fallback: extension-based
+    suffix = path.suffix.lower()
+    if suffix in _EXT_MIME:
+        return _EXT_MIME[suffix]
     mime, _ = mimetypes.guess_type(str(path))
     return mime or "application/octet-stream"
 
