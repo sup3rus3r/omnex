@@ -83,7 +83,7 @@ async def query(req: QueryRequest):
     If session_id provided, passes conversation history to the LLM for context.
     """
     from storage.mongo import (
-        get_session_messages, upsert_session_turn, create_session
+        get_session_messages, get_session_last_sources, upsert_session_turn, create_session
     )
 
     # Resolve or create session
@@ -91,8 +91,9 @@ async def query(req: QueryRequest):
     if not session_id:
         session_id = create_session()
 
-    # Fetch prior conversation history
-    history = get_session_messages(session_id, last_n=10)
+    # Fetch prior conversation history and last retrieved sources
+    history      = get_session_messages(session_id, last_n=10)
+    last_sources = get_session_last_sources(session_id)
 
     try:
         response = await search(
@@ -103,12 +104,16 @@ async def query(req: QueryRequest):
             date_to=req.date_to,
             session_id=session_id,
             history=history,
+            last_sources=last_sources,
         )
 
         # Persist all turns that produced an LLM response (search or chat)
         if response.llm_response:
             upsert_session_turn(session_id, "user", req.query)
-            upsert_session_turn(session_id, "assistant", response.llm_response)
+            # Save source_paths so follow-up queries can re-anchor to same sources
+            source_paths = list({r.source_path for r in response.results if r.source_path})
+            upsert_session_turn(session_id, "assistant", response.llm_response,
+                                source_paths=source_paths if source_paths else None)
 
         out = _to_response_out(response)
         out.session_id = session_id

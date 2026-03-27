@@ -193,17 +193,33 @@ def get_session(session_id: str) -> dict | None:
     return get_collection("sessions").find_one({"session_id": session_id})
 
 
-def upsert_session_turn(session_id: str, role: str, content: str) -> None:
+def upsert_session_turn(
+    session_id: str,
+    role: str,
+    content: str,
+    source_paths: list[str] | None = None,
+) -> None:
     """Append a message turn to the session's conversation history."""
+    update: dict = {
+        "$push": {"messages": {"role": role, "content": content, "ts": _now()}},
+        "$set":  {"updated_at": _now()},
+        "$setOnInsert": {"created_at": _now()},
+    }
+    if source_paths is not None:
+        update["$set"]["last_sources"] = source_paths
     get_collection("sessions").update_one(
         {"session_id": session_id},
-        {
-            "$push": {"messages": {"role": role, "content": content, "ts": _now()}},
-            "$set":  {"updated_at": _now()},
-            "$setOnInsert": {"created_at": _now()},
-        },
+        update,
         upsert=True,
     )
+
+
+def get_session_last_sources(session_id: str) -> list[str]:
+    """Return source_paths retrieved in the most recent assistant turn."""
+    doc = get_collection("sessions").find_one({"session_id": session_id}, {"last_sources": 1})
+    if not doc:
+        return []
+    return doc.get("last_sources", [])
 
 
 def get_session_messages(session_id: str, last_n: int = 10) -> list[dict]:

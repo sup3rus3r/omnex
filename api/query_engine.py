@@ -67,6 +67,7 @@ class OmnexState(TypedDict, total=False):
     date_to:          datetime | None
     session_id:       str | None
     history:          list[dict]
+    last_sources:     list[str]   # source_paths retrieved in previous turn
 
     # Routing
     route:            Literal["answer", "chat"]
@@ -335,6 +336,32 @@ async def _node_search_index(state: OmnexState) -> OmnexState:
         if len(results) >= top_k:
             break
 
+    # Re-inject previous session sources so follow-up queries have context
+    last_sources = state.get("last_sources") or []
+    if last_sources:
+        from storage.mongo import get_db as _get_db
+        _db = _get_db()
+        seen_paths = {r.source_path for r in results}
+        for sp in last_sources:
+            if sp in seen_paths:
+                continue  # already retrieved
+            prev_docs = list(_db["chunks"].find(
+                {"source_path": sp},
+                {"_id": 1, "file_type": 1, "source_path": 1, "text_content": 1, "metadata": 1}
+            ).sort("chunk_index", 1).limit(top_k))
+            for doc in prev_docs:
+                cid = str(doc["_id"])
+                if cid not in seen:
+                    results.append(QueryResult(
+                        chunk_id=cid,
+                        score=_SCORE_THRESHOLD,  # ensure answer routing
+                        file_type=doc.get("file_type", "unknown"),
+                        source_path=doc.get("source_path", ""),
+                        text=doc.get("text_content"),
+                        metadata=doc.get("metadata", {}),
+                    ))
+                    seen.add(cid)
+
     # MongoDB fallback — assign a minimum score so score_route can route to answer
     if not results:
         fallback = await _mongo_fallback(
@@ -400,8 +427,9 @@ _EXPRESSION_GUIDE = (
 _ANSWER_SYSTEM = """You are Omnex, a personal AI memory system.
 Search results from the user's indexed personal files are provided below.
 NEVER invent, fabricate, or guess any names, dates, facts, or details.
-ONLY state information that appears in the provided search results.
-If a detail is not in the results, say it was not found.
+ONLY state information that appears in the CURRENT retrieved results block — not from conversation history.
+Conversation history is provided only for context about what the user is asking, NOT as a source of facts.
+If a detail is not in the current retrieved results, say it was not found in the index.
 NEVER say you lack access to the user's data — you have already searched it.
 NEVER ask the user to share files — you already have the search results.
 
@@ -447,14 +475,17 @@ async def _node_answer(state: OmnexState) -> OmnexState:
     user_content = f'User request: "{query}"'
     if context:
         user_content += (
-            f"\n\nRetrieved from the user's personal data index:\n\n{context}\n\n"
-            f"Select only the items relevant to the request. "
+            f"\n\n--- CURRENT SEARCH RESULTS (only these may be cited as facts) ---\n\n{context}\n\n"
+            f"--- END SEARCH RESULTS ---\n\n"
+            f"Answer ONLY from the search results above. "
+            f"If the answer is not in these results, say it was not found — do not use conversation history as a source of facts. "
             f"Start with RELEVANT_IDS: [...] then RESPONSE: then FILTERS: [...]"
         )
     else:
         user_content += (
-            "\n\nNo items were retrieved. Tell the user you searched but found nothing. "
+            "\n\nNo items were retrieved for this query. Tell the user you searched but found nothing relevant. "
             "Suggest they may not have indexed that content yet, or try different wording. "
+            "Do NOT use conversation history to answer — only index results count as facts. "
             "Output: RELEVANT_IDS: []\nRESPONSE: <message>\nFILTERS: []"
         )
     messages.append({"role": "user", "content": user_content})
@@ -552,6 +583,7 @@ async def search(
     date_to: datetime | None = None,
     session_id: str | None = None,
     history: list[dict] | None = None,
+    last_sources: list[str] | None = None,
 ) -> QueryResponse:
 
     initial: OmnexState = {
@@ -562,6 +594,7 @@ async def search(
         "date_to":          date_to,
         "session_id":       session_id,
         "history":          history or [],
+        "last_sources":     last_sources or [],
         "results":          [],
         "expansion_ids":    set(),
         "final_results":    [],
