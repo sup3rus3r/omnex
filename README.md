@@ -119,7 +119,7 @@ Omnex mounts as a read-write virtual directory at `/mnt/omnex` (Linux/WSL). Brow
 | Provider | Models | Type |
 |---|---|---|
 | **Anthropic** | Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5 | Cloud |
-| **OpenAI** | GPT-4o, GPT-4o-mini | Cloud |
+| **OpenAI** | >= GPT-4 | Cloud |
 | **Ollama** | Phi-3, Gemma 3, Llama 3.2 — any local model | Local |
 
 Switch providers at runtime from the Settings panel. No restart needed.
