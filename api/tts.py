@@ -75,29 +75,53 @@ def _get_chatterbox():
     return _chatterbox_model
 
 
-def _stream_chatterbox(text: str) -> Generator[bytes, None, None]:
+def _split_sentences(text: str, max_chars: int = 200) -> list[str]:
+    """Split text into sentence-sized chunks for reliable TTS generation."""
+    import re
+    # Split on sentence boundaries
+    raw = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks: list[str] = []
+    current = ""
+    for sentence in raw:
+        if not sentence.strip():
+            continue
+        if current and len(current) + 1 + len(sentence) > max_chars:
+            chunks.append(current.strip())
+            current = sentence
+        else:
+            current = (current + " " + sentence).strip() if current else sentence
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks or [text.strip()]
+
+
+def _wav_pcm(wav) -> bytes:
+    """Convert a torch tensor or numpy array to int16 PCM bytes."""
     import torch
     import numpy as np
-
-    model = _get_chatterbox()
-    yield _wav_header(SAMPLE_RATE)
-
-    # Generate full audio — Turbo is fast enough (~200ms on GPU)
-    # We yield in chunks so the frontend can start playing immediately
-    wav = model.generate(text)
-
-    # wav is a torch tensor — convert to int16 PCM
     if torch.is_tensor(wav):
         wav = wav.detach().cpu().squeeze().numpy()
     wav = np.asarray(wav, dtype=np.float32)
     if wav.ndim > 1:
         wav = wav.reshape(-1)
-    pcm = (np.clip(wav, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+    return (np.clip(wav, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
-    # Yield in 8KB chunks so streaming starts immediately
+
+def _stream_chatterbox(text: str) -> Generator[bytes, None, None]:
+    model = _get_chatterbox()
+    yield _wav_header(SAMPLE_RATE)
+
+    chunks = _split_sentences(text)
+    log.debug(f"[chatterbox] {len(chunks)} sentence chunk(s) for {len(text)} chars")
+
     chunk_size = 8192
-    for i in range(0, len(pcm), chunk_size):
-        yield pcm[i:i + chunk_size]
+    for chunk in chunks:
+        if not chunk:
+            continue
+        wav = model.generate(chunk)
+        pcm = _wav_pcm(wav)
+        for i in range(0, len(pcm), chunk_size):
+            yield pcm[i:i + chunk_size]
 
 
 # ── Kokoro ────────────────────────────────────────────────────────────────────
@@ -125,8 +149,7 @@ def _download_kokoro():
 
 
 def _stream_kokoro(text: str, voice: str) -> Generator[bytes, None, None]:
-    import soundfile as sf
-    import numpy as np
+    import soundfile as sf  # noqa: F401 — kept for optional wav writes
 
     kokoro = _load_kokoro()
     if voice not in KOKORO_VOICES:
@@ -135,7 +158,7 @@ def _stream_kokoro(text: str, voice: str) -> Generator[bytes, None, None]:
     samples, sr = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
     yield _wav_header(sr)
 
-    pcm = (np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+    pcm = _wav_pcm(samples)
     chunk_size = 8192
     for i in range(0, len(pcm), chunk_size):
         yield pcm[i:i + chunk_size]

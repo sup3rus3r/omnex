@@ -224,7 +224,7 @@ def _dedup_history(history: list[dict]) -> list[dict]:
 # ── Graph nodes ───────────────────────────────────────────────────────────────
 
 # Score threshold: results above this are considered relevant
-_SCORE_THRESHOLD = 0.20
+_SCORE_THRESHOLD = 0.10
 
 
 async def _node_search_index(state: OmnexState) -> OmnexState:
@@ -742,16 +742,7 @@ async def _mongo_fallback(
     if specific_tags:
         q["tags"] = {"$all": specific_tags}
 
-    stop = {"what", "did", "i", "do", "work", "on", "the", "a", "an", "my", "me",
-            "show", "find", "list", "get", "have", "has", "is", "are", "was",
-            "recently", "lately", "today", "yesterday", "last", "this", "week",
-            "month", "year", "any", "all", "some", "about", "tell", "give",
-            "photos", "pictures", "images", "files", "documents", "videos",
-            "audio", "from", "with", "that", "those", "these", "for", "and",
-            "january", "february", "march", "april", "may", "june", "july",
-            "august", "september", "october", "november", "december",
-            "iphone", "samsung", "pixel", "android", "canon", "nikon"}
-    keywords = [w for w in re.findall(r"[a-z]+", ql) if len(w) > 2 and w not in stop]
+    keywords = re.findall(r"[a-z]+", ql)
 
     if keywords:
         try:
