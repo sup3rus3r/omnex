@@ -4,7 +4,14 @@
 
 ### Open Source AI Memory Layer — Index Everything, Recall Anything
 
-Omnex is a self-hosted, local-first AI memory platform. It indexes every file type you own — documents, photos, video, audio, code — with multi-model embeddings, semantic tagging, and a natural language query engine. Query your entire personal data history in plain language. No cloud. No keywords. No folders. Just memory.
+**These are not search queries. They are memories.**
+
+> *"Find the contract I signed around the time we moved."*
+> *"Show me photos with my sister from the last holiday trip."*
+> *"Pull up the authentication code I wrote last year."*
+> *"What was I working on the week before the product launch?"*
+
+Omnex indexes every file you own — documents, photos, video, audio, code — and lets you recall any of it in plain language. Entirely on your hardware. No cloud. No keywords. No folders.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/sup3rus3r/omnex?style=social)](https://github.com/sup3rus3r/omnex/stargazers)
@@ -31,14 +38,15 @@ Omnex is a self-hosted, local-first AI memory platform. It indexes every file ty
 ## Table of Contents
 
 - [What is Omnex?](#what-is-omnex)
+- [Why Omnex?](#why-omnex)
+- [Quickstart](#quickstart)
 - [Capabilities](#capabilities)
 - [How It Works — Architecture](#how-it-works--architecture)
 - [AI Models Powering Omnex](#ai-models-powering-omnex)
 - [Agent & Federation API](#agent--federation-api)
-- [Quickstart](#quickstart)
-- [Manual Install](#manual-install)
 - [Vision — The AI Memory OS](#vision--the-ai-memory-os)
 - [Roadmap & Future Integrations](#roadmap--future-integrations)
+- [Manual Install](#manual-install)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -58,17 +66,72 @@ Omnex indexes everything:
 - **Video** — MP4, MOV, AVI — transcribed + keyframes embedded with CLIP
 - **Code** — any source file — semantic embeddings with CodeBERT, symbol extraction
 
-Once indexed, you query in plain language:
-
-> *"Find the contract I signed around the time we moved."*
-> *"Show me photos with my sister from the Cape Town trip."*
-> *"Pull up the authentication code I wrote last year."*
-> *"What was I working on the week before the product launch?"*
-> *"Documents from March 2023 about the project handover."*
-
-These are not search queries. They are memories. Omnex retrieves them.
-
 Omnex is also an **agentic memory platform**. AI agents — Claude, GPT-4, Cursor, Windsurf, any MCP-compatible tool — can read from and write to the same index humans use. Register an agent, push observations via the REST API or MCP protocol, and the agent's memory becomes part of the shared index. Multiple Omnex instances can federate into a distributed memory network — a hivemind for agent swarms.
+
+---
+
+## Why Omnex?
+
+The existing options all have the same problem: they're either cloud-first, siloed, or not agentic.
+
+|  | Omnex | Google Photos | Apple Recall | RAG frameworks |
+|---|---|---|---|---|
+| Fully local / private | ✅ | ❌ | ❌ | ✅ |
+| All file types (docs, audio, video, code) | ✅ | ❌ | Partial | ❌ |
+| Natural language recall | ✅ | Partial | ✅ | ✅ |
+| AI agents share the same memory | ✅ | ❌ | ❌ | ❌ |
+| Federated across machines / orgs | ✅ | ❌ | ❌ | ❌ |
+| Open source | ✅ | ❌ | ❌ | ✅ |
+| Self-hosted, one command | ✅ | ❌ | ❌ | ❌ |
+
+The agent memory angle is the part that doesn't exist elsewhere. Your AI agents (Claude, Cursor, Windsurf) write observations, decisions, and research into the same index you search as a human. One memory layer — shared between you and every agent working on your behalf.
+
+---
+
+## Quickstart
+
+**The only prerequisite is [Docker Desktop](https://www.docker.com/products/docker-desktop/).**
+
+**1. Clone**
+
+```bash
+git clone https://github.com/sup3rus3r/omnex
+cd omnex
+```
+
+**2. Configure**
+
+Create `.env` in the project root:
+
+```bash
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_key_here
+ANTHROPIC_MODEL=claude-sonnet-4-6
+```
+
+**3. Start**
+
+```bash
+docker compose up --build -d
+```
+
+First build downloads PyTorch and all ML dependencies (~2–3 GB, ~10–15 minutes). Subsequent starts take seconds.
+
+> **Using a local LLM (Ollama)?** The Ollama container is opt-in — it only starts when you explicitly enable the `local` profile:
+> ```bash
+> docker compose --profile local up --build -d
+> ```
+> If you are using `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=openai`, skip the `--profile local` flag entirely. Ollama will not start.
+
+**4. Open**
+
+| Service | URL |
+|---|---|
+| UI | [http://localhost:3007](http://localhost:3007) |
+| API | [http://localhost:8001](http://localhost:8001) |
+| API docs | [http://localhost:8001/docs](http://localhost:8001/docs) |
+
+Navigate to **Ingest** in the sidebar, drop files or a folder, and click **Start ingestion**. Then switch to **Recall** and start querying.
 
 ---
 
@@ -127,6 +190,22 @@ Switch providers at runtime from the Settings panel. No restart needed.
 ---
 
 ## How It Works — Architecture
+
+```
+Your files (docs, photos, audio, video, code)
+        │
+        ▼
+   [ Omnex Ingest ]
+        │  embeddings + tagging + transcription — all local
+        ▼
+   [ Memory Index ]  ◄──── AI agents write here too (MCP / REST)
+        │
+        ▼
+   [ Query Engine ]
+        │  natural language in → structured answer out
+        ▼
+  "Here's the contract from March 2023 about the handover..."
+```
 
 ```
 Ingestion Pipeline
@@ -209,150 +288,6 @@ Omnex runs a JSON-RPC 2.0 MCP server at `/mcp`. Any MCP-compatible host can call
 | `omnex_list_indexed` | List all indexed sources with chunk counts |
 | `omnex_delete_source` | Remove all chunks for a source path |
 | `omnex_stats` | Index statistics |
-
----
-
-## Quickstart
-
-**The only prerequisite is [Docker Desktop](https://www.docker.com/products/docker-desktop/).**
-
-**1. Clone**
-
-```bash
-git clone https://github.com/sup3rus3r/omnex
-cd omnex
-```
-
-**2. Configure**
-
-Create `.env` in the project root:
-
-```bash
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your_key_here
-ANTHROPIC_MODEL=claude-sonnet-4-6
-```
-
-**3. Start**
-
-```bash
-docker compose up --build -d
-```
-
-First build downloads PyTorch and all ML dependencies (~2–3 GB, ~10–15 minutes). Subsequent starts take seconds.
-
-> **Using a local LLM (Ollama)?** The Ollama container is opt-in — it only starts when you explicitly enable the `local` profile:
-> ```bash
-> docker compose --profile local up --build -d
-> ```
-> If you are using `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=openai`, skip the `--profile local` flag entirely. Ollama will not start.
-
-**4. Open**
-
-| Service | URL |
-|---|---|
-| UI | [http://localhost:3007](http://localhost:3007) |
-| API | [http://localhost:8001](http://localhost:8001) |
-| API docs | [http://localhost:8001/docs](http://localhost:8001/docs) |
-
-Navigate to **Ingest** in the sidebar, drop files or a folder, and click **Start ingestion**. Then switch to **Recall** and start querying.
-
----
-
-## Manual Install
-
-> For contributors developing the Python backend. Docker is strongly recommended for all other use cases — it eliminates all platform-specific dependency issues on Windows.
-
-**Prerequisites:** Python 3.11+, Node.js 20+, MongoDB 7.0 on port 27017
-
-```bash
-git clone https://github.com/sup3rus3r/omnex
-cd omnex
-python -m venv .venv
-```
-
-```bash
-# Windows — from a plain PowerShell (no conda/Anaconda active)
-.venv\Scripts\pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\pip install insightface onnxruntime-gpu
-```
-
-```bash
-# Linux/macOS
-.venv/bin/pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-.venv/bin/pip install -r requirements.txt
-.venv/bin/pip install insightface onnxruntime
-```
-
-```bash
-cd interface && npm install && cd ..
-```
-
-Create `interface/.env.local`:
-
-```
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8001
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your_key_here
-ANTHROPIC_MODEL=claude-sonnet-4-6
-```
-
-```bash
-# Terminal 1 — API (plain PowerShell, not Anaconda)
-.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8001
-
-# Terminal 2 — UI
-cd interface && npm run dev
-```
-
-### Troubleshooting
-
-**"DLL load failed" / torch crash on Windows**
-Anaconda is on your PATH. Open a plain PowerShell and restart the API. Or use Docker.
-
-**"torch 2.11.0" / broken torch version**
-`uv` auto-resolved to a broken version. Fix:
-```
-.venv\Scripts\pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-```
-
-**"InsightFace not installed: Unable to import onnxruntime"**
-```
-.venv\Scripts\pip install insightface onnxruntime-gpu
-```
-
-**Ingestion stuck at "Running" forever**
-On Windows with Anaconda on PATH, sentence_transformers crashes silently. Use Docker.
-
-**MongoDB connection error**
-Check: `mongosh --eval "db.adminCommand('ping')"`. With Docker, no local MongoDB needed.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Backend | Python 3.11, FastAPI, Uvicorn |
-| Text Embeddings | sentence-transformers MiniLM-L6-v2 (384-dim) |
-| Image / Video Embeddings | CLIP ViT-B/32 (512-dim) |
-| Audio Transcription | OpenAI Whisper base |
-| Code Embeddings | CodeBERT (768-dim) |
-| Face Detection & Identity | InsightFace ArcFace buffalo_l (512-dim) + DBSCAN clustering |
-| Semantic Tagger | spaCy NER + fastText (176 langs) + KeyBERT + GLiNER ONNX + moondream2 4-bit |
-| Vector Index | USearch — file-based, i8 quantised (~4x storage savings vs float32) |
-| Metadata Store | MongoDB 7 |
-| Query Engine | LangGraph StateGraph — score-based routing, structured LLM output |
-| Agent API | REST + MCP JSON-RPC 2.0 — read/write for any AI agent |
-| Federation | Peer registry + concurrent fan-out search + broadcast memory replication |
-| Frontend | Next.js 14, React 18, TypeScript, Framer Motion |
-| LLM | Anthropic Claude / OpenAI GPT / Ollama (local) — configurable at runtime |
-| TTS | Chatterbox Turbo (GPU, expressive) / Kokoro ONNX (CPU fallback) |
-| Voice Input | Whisper local — press-to-speak + always-listening VAD mode |
-| Remote Access | ngrok tunnel + HMAC-signed media URLs |
-| Virtual Filesystem | FUSE / fusepy — read-write virtual drive (Linux/WSL) |
-| Infrastructure | Docker Compose |
 
 ---
 
@@ -481,6 +416,103 @@ Everything built so far indexes data on your local machine. The next frontier is
 Every connector follows the same pattern: pull content from the source, normalise into the standard chunk schema, run through the existing embedding pipeline, store in MongoDB + USearch. The query engine is unchanged. You query across local files, email, Slack, GitHub, and health data with the same natural language interface.
 
 Connectors are opt-in. Credentials are stored locally. OAuth tokens are encrypted at rest. No data routes through a cloud intermediary. Ingestion happens on your machine.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.11, FastAPI, Uvicorn |
+| Text Embeddings | sentence-transformers MiniLM-L6-v2 (384-dim) |
+| Image / Video Embeddings | CLIP ViT-B/32 (512-dim) |
+| Audio Transcription | OpenAI Whisper base |
+| Code Embeddings | CodeBERT (768-dim) |
+| Face Detection & Identity | InsightFace ArcFace buffalo_l (512-dim) + DBSCAN clustering |
+| Semantic Tagger | spaCy NER + fastText (176 langs) + KeyBERT + GLiNER ONNX + moondream2 4-bit |
+| Vector Index | USearch — file-based, i8 quantised (~4x storage savings vs float32) |
+| Metadata Store | MongoDB 7 |
+| Query Engine | LangGraph StateGraph — score-based routing, structured LLM output |
+| Agent API | REST + MCP JSON-RPC 2.0 — read/write for any AI agent |
+| Federation | Peer registry + concurrent fan-out search + broadcast memory replication |
+| Frontend | Next.js 14, React 18, TypeScript, Framer Motion |
+| LLM | Anthropic Claude / OpenAI GPT / Ollama (local) — configurable at runtime |
+| TTS | Chatterbox Turbo (GPU, expressive) / Kokoro ONNX (CPU fallback) |
+| Voice Input | Whisper local — press-to-speak + always-listening VAD mode |
+| Remote Access | ngrok tunnel + HMAC-signed media URLs |
+| Virtual Filesystem | FUSE / fusepy — read-write virtual drive (Linux/WSL) |
+| Infrastructure | Docker Compose |
+
+---
+
+## Manual Install
+
+> For contributors developing the Python backend. Docker is strongly recommended for all other use cases — it eliminates all platform-specific dependency issues on Windows.
+
+**Prerequisites:** Python 3.11+, Node.js 20+, MongoDB 7.0 on port 27017
+
+```bash
+git clone https://github.com/sup3rus3r/omnex
+cd omnex
+python -m venv .venv
+```
+
+```bash
+# Windows — from a plain PowerShell (no conda/Anaconda active)
+.venv\Scripts\pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install insightface onnxruntime-gpu
+```
+
+```bash
+# Linux/macOS
+.venv/bin/pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install insightface onnxruntime
+```
+
+```bash
+cd interface && npm install && cd ..
+```
+
+Create `interface/.env.local`:
+
+```
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8001
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_key_here
+ANTHROPIC_MODEL=claude-sonnet-4-6
+```
+
+```bash
+# Terminal 1 — API (plain PowerShell, not Anaconda)
+.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8001
+
+# Terminal 2 — UI
+cd interface && npm run dev
+```
+
+### Troubleshooting
+
+**"DLL load failed" / torch crash on Windows**
+Anaconda is on your PATH. Open a plain PowerShell and restart the API. Or use Docker.
+
+**"torch 2.11.0" / broken torch version**
+`uv` auto-resolved to a broken version. Fix:
+```
+.venv\Scripts\pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+```
+
+**"InsightFace not installed: Unable to import onnxruntime"**
+```
+.venv\Scripts\pip install insightface onnxruntime-gpu
+```
+
+**Ingestion stuck at "Running" forever**
+On Windows with Anaconda on PATH, sentence_transformers crashes silently. Use Docker.
+
+**MongoDB connection error**
+Check: `mongosh --eval "db.adminCommand('ping')"`. With Docker, no local MongoDB needed.
 
 ---
 
