@@ -335,14 +335,18 @@ async def _node_search_index(state: OmnexState) -> OmnexState:
         if len(results) >= top_k:
             break
 
-    # MongoDB fallback
+    # MongoDB fallback — assign a minimum score so score_route can route to answer
     if not results:
-        results = await _mongo_fallback(
+        fallback = await _mongo_fallback(
             query=query, intent=intent,
             file_type_filter=file_type_filter,
             date_from=date_from, date_to=date_to,
             top_k=top_k, device_hint=intent.get("device_hint"),
         )
+        # Give fallback results a minimum score above threshold so they reach answer node
+        for r in fallback:
+            r.score = _SCORE_THRESHOLD
+        results = fallback
 
     return {**state, "intent": intent, "results": results}
 

@@ -132,7 +132,7 @@ async def store_observation(req: ObservationRequest):
         "source_hash":  "",
         "file_type":    "observation",
         "chunk_index":  0,
-        "text":         req.text.strip(),
+        "text_content":  req.text.strip(),
         "tags":         ["agent", "observation", agent["name"]],
         "created_at":   now,
         "metadata": {
@@ -169,7 +169,7 @@ async def store_observation(req: ObservationRequest):
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     payload = {
-                        "text":     req.text,
+                        "text":     req.text,   # ObservationRequest field name
                         "source":   req.source,
                         "agent_id": req.agent_id,
                         "metadata": req.metadata,
