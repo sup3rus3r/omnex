@@ -30,6 +30,7 @@ services:
       WHISPER_CACHE: /data/models/whisper
       TRANSFORMERS_OFFLINE: "0"
       HF_DATASETS_OFFLINE: "0"
+      PYTHONPATH: /app
       GPU_ENABLED: "${GPU_ENABLED:-false}"
       TTS_ENGINE: "${TTS_ENGINE:-chatterbox}"
       TTS_KOKORO_VOICE: "${TTS_KOKORO_VOICE:-af_heart}"
