@@ -107,6 +107,8 @@ def ingest_file(path: Path) -> dict:
                 embedding_model="clip-vit-base-patch32",
             )
             chunk_id = insert_chunk(doc)
+            # Async moondream caption — fires after chunk is stored
+            _auto_tags(path, file_type, metadata=file_meta, chunk_id=chunk_id)
             store_thumbnail(chunk_id, img_result.thumbnail)
             leann_id = add_vector(
                 IndexName.IMAGE,
@@ -300,6 +302,7 @@ def ingest_file(path: Path) -> dict:
                     "end_line":    cm.end_line,
                 })
 
+            # Tags computed before insert (without chunk_id — sync only)
             tags = _auto_tags(path, file_type, metadata=chunk_meta, text_content=chunk.text)
             if code_result:
                 tags.append(code_result.language)
@@ -318,6 +321,9 @@ def ingest_file(path: Path) -> dict:
                 embedding_model=embedding_model,
             )
             chunk_id = insert_chunk(doc)
+            # Fire async GLiNER deep enrichment now that we have the chunk_id
+            _auto_tags(path, file_type, metadata=chunk_meta,
+                       text_content=chunk.text, chunk_id=chunk_id)
             leann_id = add_vector(
                 index_name,
                 chunk_id,
@@ -340,10 +346,12 @@ def ingest_file(path: Path) -> dict:
 def run(source_path: Path, workers: int = 4, cancel_event=None) -> None:
     logger.info(f"Omnex ingestion starting — source: {source_path}")
 
-    # Pre-warm the embedding model before the thread pool starts.
+    # Pre-warm models before the thread pool starts.
     # Lazy loading inside multiple threads causes OMP thread contention → SIGSEGV.
     from embeddings.text import _get_model as _warm_text
     _warm_text()
+    from ingestion.semantic_tagger import warm_up as _warm_tagger
+    _warm_tagger()
 
     files = collect_files(source_path)
     total = len(files)
@@ -491,6 +499,7 @@ def _auto_tags(
     metadata: dict | None = None,
     text_content: str | None = None,
     image_embedding=None,
+    chunk_id: str | None = None,
 ) -> list[str]:
     from embeddings.tagger import tag_chunk
     return tag_chunk(
@@ -499,6 +508,7 @@ def _auto_tags(
         metadata=metadata or {},
         text_content=text_content,
         image_embedding=image_embedding,
+        chunk_id=chunk_id,
     )
 
 

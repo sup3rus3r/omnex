@@ -2,14 +2,14 @@
 Omnex — Query Engine (LangGraph)
 
 Graph:
-  START → classify → search_index → expand_doc → answer → END
-                   ↘ chat ────────────────────────────────↗
+  START → search_index → score_route → expand_doc → answer → END
+                                     ↘ chat ──────────────────↗
 
 Node responsibilities:
-  classify     — LLM decides: SEARCH (+ keywords) or CHAT
-  search_index — vector search + mongo fallback + filters
+  search_index — always runs: vector search + mongo fallback + filters
+  score_route  — pure function: if best score >= threshold → answer, else → chat
   expand_doc   — if single source, fetch all chunks for full context
-  answer       — LLM answers using retrieved context
+  answer       — LLM answers using retrieved context, returns structured filters
   chat         — LLM answers conversationally (no index access)
 """
 
@@ -35,12 +35,22 @@ class QueryResult:
 
 
 @dataclass
+class ApplicableFilter:
+    """A filter the user can apply — only emitted when the LLM knows it's valid."""
+    label:      str   # Display text, e.g. "Only documents"
+    query:      str   # The follow-up query to send when clicked
+    file_type:  str | None = None
+    date_from:  str | None = None
+    date_to:    str | None = None
+
+
+@dataclass
 class QueryResponse:
     query:       str
     results:     list[QueryResult]
     total:       int
     llm_response: str | None = None
-    suggested_refinements: list[str] = field(default_factory=list)
+    applicable_filters: list[ApplicableFilter] = field(default_factory=list)
     session_id:  str | None = None
 
 
@@ -59,8 +69,7 @@ class OmnexState(TypedDict, total=False):
     history:          list[dict]
 
     # Routing
-    route:            Literal["search", "chat"]
-    search_keywords:  str
+    route:            Literal["answer", "chat"]
 
     # Search
     intent:           dict
@@ -71,6 +80,7 @@ class OmnexState(TypedDict, total=False):
     # Output
     llm_response:     str | None
     final_results:    list[QueryResult]
+    applicable_filters: list[ApplicableFilter]
 
 
 # ── Intent detection ──────────────────────────────────────────────────────────
@@ -212,51 +222,8 @@ def _dedup_history(history: list[dict]) -> list[dict]:
 
 # ── Graph nodes ───────────────────────────────────────────────────────────────
 
-_CLASSIFY_SYSTEM = """You are a routing agent for Omnex, a personal AI memory system.
-Decide if the user's message requires searching their indexed personal files or is casual conversation.
-
-Reply with EXACTLY one of:
-SEARCH: <concise search keywords>
-CHAT
-
-Use SEARCH for: anything about the user's files, documents, photos, videos, audio, code, work, people, events, memories.
-Use CHAT for: greetings, thanks, casual chat, questions about what Omnex can do.
-
-Examples:
-  hi → CHAT
-  thanks → CHAT
-  what can you do? → CHAT
-  where do I work? → SEARCH: current employer job title
-  who are my references? → SEARCH: references contact details
-  show me photos from 2023 → SEARCH: photos 2023
-  find my Adobe invoice → SEARCH: invoice Adobe
-  what did I work on last year? → SEARCH: projects work 2024"""
-
-
-async def _node_classify(state: OmnexState) -> OmnexState:
-    import logging
-    log = logging.getLogger("omnex.graph")
-    query = state["query"]
-
-    try:
-        raw = await _llm_call(
-            messages=[{"role": "user", "content": query}],
-            system=_CLASSIFY_SYSTEM,
-            max_tokens=64,
-        )
-        log.info(f"[classify] '{query}' → {raw!r}")
-
-        if raw.upper().startswith("CHAT"):
-            return {**state, "route": "chat", "search_keywords": ""}
-        if raw.upper().startswith("SEARCH:"):
-            keywords = raw[7:].strip() or query
-            return {**state, "route": "search", "search_keywords": keywords}
-        # Unrecognised — default to search
-        return {**state, "route": "search", "search_keywords": query}
-
-    except Exception as e:
-        log.warning(f"[classify] failed ({e}), defaulting to search")
-        return {**state, "route": "search", "search_keywords": query}
+# Score threshold: results above this are considered relevant
+_SCORE_THRESHOLD = 0.20
 
 
 async def _node_search_index(state: OmnexState) -> OmnexState:
@@ -265,7 +232,6 @@ async def _node_search_index(state: OmnexState) -> OmnexState:
     from embeddings.tagger import extract_tag_filters
 
     query            = state["query"]
-    embed_query      = state.get("search_keywords") or query
     top_k            = state.get("top_k", 8)
     file_type_filter = state.get("file_type_filter")
     date_from        = state.get("date_from")
@@ -287,20 +253,20 @@ async def _node_search_index(state: OmnexState) -> OmnexState:
     # Text / document
     if not intent["visual"] or intent["code"]:
         from embeddings.text import embed as embed_text
-        text_vec = embed_text(embed_query).tolist()
+        text_vec = embed_text(query).tolist()
         if not intent["code"]:
             raw_results.extend(leann_search(IndexName.TEXT, text_vec, top_k=top_k))
 
     # Code
     if intent["code"]:
         from embeddings.code import embed as embed_code
-        code_vec = embed_code(embed_query).tolist()
+        code_vec = embed_code(query).tolist()
         raw_results.extend(leann_search(IndexName.CODE, code_vec, top_k=top_k))
 
     # Visual
     if intent["visual"]:
         from embeddings.image import embed_text as clip_text
-        clip_vec = clip_text(embed_query)
+        clip_vec = clip_text(query)
         raw_results.extend(leann_search(IndexName.IMAGE, clip_vec, top_k=top_k))
         raw_results.extend(leann_search(IndexName.VIDEO, clip_vec, top_k=top_k))
 
@@ -310,22 +276,21 @@ async def _node_search_index(state: OmnexState) -> OmnexState:
     if not raw_results or bool(set(query.lower().split()) & audio_kw):
         if "text_vec" not in dir():
             from embeddings.text import embed as embed_text
-            text_vec = embed_text(embed_query).tolist()
+            text_vec = embed_text(query).tolist()
         raw_results.extend(leann_search(IndexName.AUDIO, text_vec, top_k=top_k))
 
     # Visual fallback
     if not raw_results:
         from embeddings.image import embed_text as clip_text
-        clip_vec = clip_text(embed_query)
+        clip_vec = clip_text(query)
         raw_results.extend(leann_search(IndexName.IMAGE, clip_vec, top_k=top_k))
 
     # Filter + fetch docs
     results: list[QueryResult] = []
     seen: set[str] = set()
-    SCORE_THRESHOLD = 0.15
 
     for hit in sorted(raw_results, key=lambda x: x["score"], reverse=True):
-        if hit.get("score", 0) < SCORE_THRESHOLD:
+        if hit.get("score", 0) < 0.05:  # very low bar — score_route decides routing
             break
         chunk_id = hit.get("chunk_id")
         if not chunk_id or chunk_id in seen:
@@ -428,22 +393,29 @@ _EXPRESSION_GUIDE = (
     "Never overuse tags — one per response at most unless the content genuinely calls for more."
 )
 
-_ANSWER_SYSTEM = (
-    "You are Omnex, a personal AI memory system. "
-    "Search results from the user's indexed personal files are provided below. "
-    "NEVER invent, fabricate, or guess any names, dates, facts, or details. "
-    "ONLY state information that appears in the provided search results. "
-    "If a detail is not in the results, say it was not found. "
-    "NEVER say you lack access to the user's data — you have already searched it. "
-    "NEVER ask the user to share files — you already have the search results. "
-    "ALWAYS begin your reply with exactly:\n"
-    "RELEVANT_IDS: [\"id1\", \"id2\"]\n"
-    "List only the IDs (from the ID: field) of results that are relevant to the query. "
-    "Then write a concise response using only facts from those results. "
-    "If none match: RELEVANT_IDS: [] and say you found nothing. "
-    "Do not use markdown, bullet points, or bold text. Write in plain sentences.\n\n"
-    + _EXPRESSION_GUIDE
-)
+_ANSWER_SYSTEM = """You are Omnex, a personal AI memory system.
+Search results from the user's indexed personal files are provided below.
+NEVER invent, fabricate, or guess any names, dates, facts, or details.
+ONLY state information that appears in the provided search results.
+If a detail is not in the results, say it was not found.
+NEVER say you lack access to the user's data — you have already searched it.
+NEVER ask the user to share files — you already have the search results.
+
+Respond in this EXACT format (no deviation):
+
+RELEVANT_IDS: ["id1", "id2"]
+RESPONSE: Your answer here in plain sentences. No markdown, bullets, or bold.
+FILTERS: [{"label": "Only documents", "query": "<original query> documents only", "file_type": "document"}, ...]
+
+Rules for FILTERS:
+- Only include a filter if the retrieved results ACTUALLY CONTAIN that file type or date range.
+- If results are all documents, offer a "Only documents" filter with file_type="document".
+- If results contain multiple file types, offer one filter per type present.
+- If results span multiple years/months, offer a date filter for the most relevant period.
+- If no useful filter applies, output FILTERS: []
+- Never invent filters for data that isn't in the results.
+
+""" + _EXPRESSION_GUIDE
 
 _CHAT_SYSTEM = (
     "You are Omnex, a personal AI memory system and assistant. "
@@ -457,13 +429,13 @@ _CHAT_SYSTEM = (
 
 async def _node_answer(state: OmnexState) -> OmnexState:
     """LLM answers using retrieved search results."""
-    import logging
+    import logging, json
     log = logging.getLogger("omnex.graph")
 
-    results      = state.get("results", [])
+    results       = state.get("results", [])
     expansion_ids = state.get("expansion_ids", set())
-    query        = state["query"]
-    history      = state.get("history", [])
+    query         = state["query"]
+    history       = state.get("history", [])
 
     context  = _build_context(results)
     messages = _dedup_history(history)
@@ -473,32 +445,34 @@ async def _node_answer(state: OmnexState) -> OmnexState:
         user_content += (
             f"\n\nRetrieved from the user's personal data index:\n\n{context}\n\n"
             f"Select only the items relevant to the request. "
-            f"Start with RELEVANT_IDS: [...] using the ID values shown, then respond."
+            f"Start with RELEVANT_IDS: [...] then RESPONSE: then FILTERS: [...]"
         )
     else:
         user_content += (
             "\n\nNo items were retrieved. Tell the user you searched but found nothing. "
-            "Suggest they may not have indexed that content yet, or try different wording."
+            "Suggest they may not have indexed that content yet, or try different wording. "
+            "Output: RELEVANT_IDS: []\nRESPONSE: <message>\nFILTERS: []"
         )
     messages.append({"role": "user", "content": user_content})
 
     try:
         raw = await _llm_call(messages, system=_ANSWER_SYSTEM, max_tokens=1024)
-        log.info(f"[answer] raw: {raw[:300]}")
-        kept_ids, response_text = _parse_llm_response(raw, results)
+        log.info(f"[answer] raw: {raw[:400]}")
+        kept_ids, response_text, applicable_filters = _parse_llm_response(raw, results)
 
-        # When full-doc expansion happened, don't filter by LLM IDs — trust full doc
         if expansion_ids:
             final_results = results
         else:
             id_set = set(kept_ids)
             final_results = [r for r in results if r.chunk_id in id_set] if kept_ids else results
 
-        return {**state, "llm_response": response_text, "final_results": final_results}
+        return {**state, "llm_response": response_text, "final_results": final_results,
+                "applicable_filters": applicable_filters}
 
     except Exception as e:
         log.warning(f"[answer] LLM failed: {e}")
-        return {**state, "llm_response": None, "final_results": results}
+        return {**state, "llm_response": None, "final_results": results,
+                "applicable_filters": []}
 
 
 async def _node_chat(state: OmnexState) -> OmnexState:
@@ -519,13 +493,22 @@ async def _node_chat(state: OmnexState) -> OmnexState:
         log.warning(f"[chat] LLM failed: {e}")
         response = "Hey! Ask me anything about your files and data."
 
-    return {**state, "llm_response": response, "final_results": []}
+    return {**state, "llm_response": response, "final_results": [], "applicable_filters": []}
 
 
-# ── Routing edge ──────────────────────────────────────────────────────────────
+# ── Score-based routing edge ───────────────────────────────────────────────────
 
-def _route_after_classify(state: OmnexState) -> Literal["search_index", "chat"]:
-    return "search_index" if state.get("route") == "search" else "chat"
+def _route_after_search(state: OmnexState) -> Literal["expand_doc", "chat"]:
+    import logging
+    log = logging.getLogger("omnex.graph")
+    results = state.get("results", [])
+    if not results:
+        log.info("[score_route] no results → chat")
+        return "chat"
+    best_score = max((r.score for r in results), default=0.0)
+    route = "expand_doc" if best_score >= _SCORE_THRESHOLD else "chat"
+    log.info(f"[score_route] best_score={best_score:.3f} → {route}")
+    return route
 
 
 # ── Build the graph ───────────────────────────────────────────────────────────
@@ -535,21 +518,19 @@ from langgraph.graph import StateGraph, END, START
 def _build_graph():
     g = StateGraph(OmnexState)
 
-    g.add_node("classify",     _node_classify)
     g.add_node("search_index", _node_search_index)
     g.add_node("expand_doc",   _node_expand_doc)
     g.add_node("answer",       _node_answer)
     g.add_node("chat",         _node_chat)
 
-    g.add_edge(START, "classify")
-    g.add_conditional_edges("classify", _route_after_classify, {
-        "search_index": "search_index",
-        "chat":         "chat",
+    g.add_edge(START, "search_index")
+    g.add_conditional_edges("search_index", _route_after_search, {
+        "expand_doc": "expand_doc",
+        "chat":       "chat",
     })
-    g.add_edge("search_index", "expand_doc")
-    g.add_edge("expand_doc",   "answer")
-    g.add_edge("answer",       END)
-    g.add_edge("chat",         END)
+    g.add_edge("expand_doc", "answer")
+    g.add_edge("answer",     END)
+    g.add_edge("chat",       END)
 
     return g.compile()
 
@@ -557,7 +538,7 @@ def _build_graph():
 _graph = _build_graph()
 
 
-# ── Public API — same signature as before ─────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────
 
 async def search(
     query: str,
@@ -580,19 +561,20 @@ async def search(
         "results":          [],
         "expansion_ids":    set(),
         "final_results":    [],
+        "applicable_filters": [],
     }
 
     result = await _graph.ainvoke(initial)
 
-    final_results = result.get("final_results") or []
-    intent        = result.get("intent") or {}
+    final_results      = result.get("final_results") or []
+    applicable_filters = result.get("applicable_filters") or []
 
     return QueryResponse(
         query=query,
         results=final_results,
         total=len(final_results),
         llm_response=result.get("llm_response"),
-        suggested_refinements=_suggest_refinements(query, intent, final_results),
+        applicable_filters=applicable_filters,
         session_id=session_id,
     )
 
@@ -618,34 +600,49 @@ def _build_context(results: list[QueryResult]) -> str:
     return "\n\n".join(parts)
 
 
-def _parse_llm_response(raw: str, candidates: list[QueryResult]) -> tuple[list[str], str]:
+def _parse_llm_response(
+    raw: str, candidates: list[QueryResult]
+) -> tuple[list[str], str, list[ApplicableFilter]]:
     import json
     all_ids = [r.chunk_id for r in candidates]
-    match = re.search(r'RELEVANT_IDS:\s*(\[.*?\])', raw, re.DOTALL)
-    if match:
+
+    # Extract RELEVANT_IDS
+    kept_ids = all_ids
+    id_match = re.search(r'RELEVANT_IDS:\s*(\[.*?\])', raw, re.DOTALL)
+    if id_match:
         try:
-            kept  = json.loads(match.group(1))
-            prose = raw[match.end():].strip()
-            valid = [i for i in kept if i in set(all_ids)]
-            return valid if valid else all_ids, prose or raw
+            parsed = json.loads(id_match.group(1))
+            valid = [i for i in parsed if i in set(all_ids)]
+            if valid:
+                kept_ids = valid
         except Exception:
             pass
-    return all_ids, raw
 
+    # Extract RESPONSE
+    response_text = raw
+    resp_match = re.search(r'RESPONSE:\s*(.*?)(?=\nFILTERS:|$)', raw, re.DOTALL)
+    if resp_match:
+        response_text = resp_match.group(1).strip()
 
-def _suggest_refinements(query: str, intent: dict, results: list[QueryResult]) -> list[str]:
-    suggestions = []
-    if results:
-        types = {r.file_type for r in results}
-        if "image" in types:
-            suggestions.append("Show only photos")
-        if "document" in types:
-            suggestions.append("Show only documents")
-        if len(results) > 3:
-            suggestions.append("Show more like the first result")
-    if not intent.get("temporal"):
-        suggestions.append("Filter by date range")
-    return suggestions[:3]
+    # Extract FILTERS
+    applicable_filters: list[ApplicableFilter] = []
+    filters_match = re.search(r'FILTERS:\s*(\[.*?\])', raw, re.DOTALL)
+    if filters_match:
+        try:
+            raw_filters = json.loads(filters_match.group(1))
+            for f in raw_filters:
+                if isinstance(f, dict) and f.get("label") and f.get("query"):
+                    applicable_filters.append(ApplicableFilter(
+                        label=f["label"],
+                        query=f["query"],
+                        file_type=f.get("file_type"),
+                        date_from=f.get("date_from"),
+                        date_to=f.get("date_to"),
+                    ))
+        except Exception:
+            pass
+
+    return kept_ids, response_text or raw, applicable_filters
 
 
 # ── MongoDB broad fallback ─────────────────────────────────────────────────────

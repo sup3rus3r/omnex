@@ -110,6 +110,11 @@ _TOOLS = [
                     "type": "object",
                     "description": "Optional key-value metadata to attach",
                 },
+                "broadcast": {
+                    "type": "boolean",
+                    "description": "If true, replicate this memory to all active federation peers",
+                    "default": False,
+                },
             },
             "required": ["text"],
         },
@@ -144,6 +149,44 @@ _TOOLS = [
     {
         "name": "omnex_stats",
         "description": "Get statistics about the Omnex index — total chunks, counts by type.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "omnex_search_federated",
+        "description": (
+            "Search across this Omnex instance AND all registered peer instances simultaneously. "
+            "Results from all nodes are merged and ranked by score. "
+            "Each result is annotated with origin_instance so you know which node it came from. "
+            "Use this when you want to search the full federated memory network."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Maximum results to return per node (default 10)",
+                    "default": 10,
+                },
+                "file_type": {
+                    "type": "string",
+                    "description": "Filter by type: document, image, video, audio, code",
+                    "enum": ["document", "image", "video", "audio", "code"],
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "omnex_list_peers",
+        "description": "List all registered peer Omnex instances in the federation.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -214,6 +257,12 @@ async def _handle_tool_call(req: MCPRequest, request: Request) -> dict:
 
     if tool_name == "omnex_stats":
         return await _tool_stats(req.id)
+
+    if tool_name == "omnex_search_federated":
+        return await _tool_search_federated(req.id, arguments)
+
+    if tool_name == "omnex_list_peers":
+        return await _tool_list_peers(req.id)
 
     return _error(req.id, -32602, f"Unknown tool: {tool_name}")
 
@@ -304,9 +353,10 @@ async def _tool_list_indexed(req_id: Any, args: dict) -> dict:
 async def _tool_remember(req_id: Any, args: dict, agent_id: str) -> dict:
     from api.routes.agents import store_observation, ObservationRequest
 
-    text   = args.get("text", "").strip()
-    source = args.get("source", "agent")
-    meta   = args.get("metadata", {})
+    text      = args.get("text", "").strip()
+    source    = args.get("source", "agent")
+    meta      = args.get("metadata", {})
+    broadcast = bool(args.get("broadcast", False))
 
     if not text:
         return _error(req_id, -32602, "text is required")
@@ -322,12 +372,17 @@ async def _tool_remember(req_id: Any, args: dict, agent_id: str) -> dict:
             source=source,
             agent_id=agent_id,
             metadata=meta,
+            broadcast=broadcast,
         ))
     except Exception as e:
         return _error(req_id, -32603, str(e))
 
+    broadcast_note = ""
+    if broadcast and result.get("broadcast_peers"):
+        broadcast_note = f" Replicated to: {', '.join(result['broadcast_peers'])}."
+
     return _ok(req_id, {
-        "content": [{"type": "text", "text": f"Stored: {text[:120]}{'…' if len(text) > 120 else ''}"}],
+        "content": [{"type": "text", "text": f"Stored: {text[:120]}{'…' if len(text) > 120 else ''}{broadcast_note}"}],
         "isError": False,
     })
 
@@ -353,7 +408,7 @@ async def _tool_search(req_id: Any, args: dict) -> dict:
             "score":       round(r.score, 4),
             "file_type":   r.file_type,
             "source_path": r.source_path,
-            "text":        (r.text or "")[:500],
+            "text":        r.text or "",
         }
         for r in response.results
     ]
@@ -387,12 +442,66 @@ async def _tool_stats(req_id: Any) -> dict:
     })
 
 
+async def _tool_search_federated(req_id: Any, args: dict) -> dict:
+    from api.routes.federation import federated_search, FederatedSearchRequest
+    query     = args.get("query", "")
+    top_k     = int(args.get("top_k", 10))
+    file_type = args.get("file_type")
+    if not query:
+        return _error(req_id, -32602, "query is required")
+    try:
+        response = await federated_search(FederatedSearchRequest(
+            query=query, top_k=top_k, file_type=file_type,
+        ))
+    except Exception as e:
+        return _error(req_id, -32603, str(e))
+
+    results = [
+        {
+            "chunk_id":        r.get("chunk_id", ""),
+            "score":           round(r.get("score", 0.0), 4),
+            "file_type":       r.get("file_type", ""),
+            "source_path":     r.get("source_path", ""),
+            "text":            r.get("text") or "",
+            "origin_instance": r.get("origin_instance", "local"),
+        }
+        for r in response["results"]
+    ]
+    content = {
+        "query":         query,
+        "total":         response["total"],
+        "peers_queried": response["peers_queried"],
+        "results":       results,
+        "llm_response":  response.get("llm_response"),
+    }
+    return _ok(req_id, {
+        "content": [{"type": "text", "text": _format_results(content)}],
+        "isError": False,
+    })
+
+
+async def _tool_list_peers(req_id: Any) -> dict:
+    from storage.mongo import get_db
+    db   = get_db()
+    docs = list(db["federation_peers"].find({}, {"_id": 0, "api_key": 0}))
+    if not docs:
+        text = "No peers registered. Use POST /federation/peers to add one."
+    else:
+        lines = []
+        for p in docs:
+            status = "active" if p.get("active") else "inactive"
+            last   = p.get("last_seen", "never")
+            lines.append(f"[{status}] {p['label']} — {p['url']} (last seen: {last})")
+        text = f"{len(docs)} peer(s):\n" + "\n".join(lines)
+    return _ok(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
+
+
 def _format_results(content: dict) -> str:
     lines = [f"Query: {content['query']}", f"Results: {content['total']}", ""]
     for i, r in enumerate(content["results"], 1):
         lines.append(f"[{i}] {r['file_type'].upper()} (score: {r['score']}) — {r['source_path']}")
         if r["text"]:
-            lines.append(f"    {r['text'][:200]}")
+            lines.append(f"    {r['text']}")
     if content.get("llm_response"):
         lines += ["", "Summary:", content["llm_response"]]
     return "\n".join(lines)

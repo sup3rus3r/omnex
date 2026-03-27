@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from api.auth import require_api_key
-from api.query_engine import search, QueryResponse
+from api.query_engine import search, QueryResponse, ApplicableFilter
 
 router = APIRouter()
 
@@ -52,13 +52,21 @@ class QueryResultOut(BaseModel):
     thumbnail_url: str | None
 
 
+class ApplicableFilterOut(BaseModel):
+    label:     str
+    query:     str
+    file_type: str | None = None
+    date_from: str | None = None
+    date_to:   str | None = None
+
+
 class QueryResponseOut(BaseModel):
-    query:                  str
-    results:                list[QueryResultOut]
-    total:                  int
-    llm_response:           str | None
-    suggested_refinements:  list[str]
-    session_id:             str | None
+    query:               str
+    results:             list[QueryResultOut]
+    total:               int
+    llm_response:        str | None
+    applicable_filters:  list[ApplicableFilterOut]
+    session_id:          str | None
 
 
 class SessionOut(BaseModel):
@@ -180,7 +188,16 @@ def _to_response_out(r: QueryResponse) -> QueryResponseOut:
         ],
         total=r.total,
         llm_response=r.llm_response,
-        suggested_refinements=r.suggested_refinements,
+        applicable_filters=[
+            ApplicableFilterOut(
+                label=f.label,
+                query=f.query,
+                file_type=f.file_type,
+                date_from=f.date_from,
+                date_to=f.date_to,
+            )
+            for f in r.applicable_filters
+        ],
         session_id=r.session_id,
     )
 

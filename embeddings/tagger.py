@@ -104,6 +104,7 @@ def tag_chunk(
     metadata: dict[str, Any],
     text_content: str | None = None,
     image_embedding=None,       # numpy array — CLIP image embedding (512-dim)
+    chunk_id: str | None = None,  # if provided, triggers async deep enrichment
 ) -> list[str]:
     """
     Generate all tags for a single chunk.
@@ -114,6 +115,7 @@ def tag_chunk(
         metadata:        Chunk metadata dict (EXIF, timestamps, language, etc.)
         text_content:    Extracted text (transcript, document body, code snippet)
         image_embedding: Pre-computed CLIP image embedding (saves re-encoding)
+        chunk_id:        MongoDB chunk ID — enables async GLiNER/moondream enrichment
 
     Returns:
         Sorted, deduplicated list of lowercase tag strings.
@@ -145,6 +147,33 @@ def tag_chunk(
 
     # 8. Path-hint tags (Desktop, Downloads, Documents, etc.)
     tags.update(_path_hint_tags(path))
+
+    # 9. Semantic tagger — spaCy NER + fastText LID + KeyBERT + doc-type (sync)
+    try:
+        from ingestion.semantic_tagger import tag_sync, tag_async_text, tag_async_image
+        sem = tag_sync(
+            text=text_content,
+            file_type=file_type,
+            metadata=metadata,
+            source_path=path,
+        )
+        tags.update(sem.get("semantic_tags", []))
+
+        # Merge enriched metadata fields back into the metadata dict
+        for key in ("detected_language", "entities", "people", "organizations",
+                    "places", "keywords", "doc_type"):
+            if key in sem:
+                metadata[key] = sem[key]
+
+        # Fire async deep enrichment if we have a chunk_id
+        if chunk_id:
+            if text_content and file_type in ("document", "audio", "video", "code"):
+                tag_async_text(chunk_id, text_content, file_type)
+            elif file_type == "image" and path.exists():
+                tag_async_image(chunk_id, path)
+    except Exception as e:
+        import logging
+        logging.getLogger("omnex.tagger").debug(f"Semantic tagger error: {e}")
 
     return sorted(tags)
 

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import query, chunks, ingest, identity, setup, mcp, tts, timeline, agents
+from api.routes import query, chunks, ingest, identity, setup, mcp, tts, timeline, agents, federation
 
 
 @asynccontextmanager
@@ -67,7 +67,8 @@ app.include_router(setup.router,    prefix="/setup",    tags=["Setup"])
 app.include_router(mcp.router,      prefix="/mcp",      tags=["MCP"])
 app.include_router(tts.router,      prefix="/voice",    tags=["TTS"])
 app.include_router(timeline.router, prefix="/timeline", tags=["Timeline"])
-app.include_router(agents.router,  prefix="/agents",   tags=["Agents"])
+app.include_router(agents.router,      prefix="/agents",      tags=["Agents"])
+app.include_router(federation.router,  prefix="/federation",  tags=["Federation"])
 
 
 @app.get("/", tags=["Health"])

@@ -88,6 +88,32 @@ RUN pip install --no-cache-dir chatterbox-tts --no-deps \
 # usearch — compressed file-based vector index (i8 quantization, replaces leann)
 RUN pip install --no-cache-dir usearch>=2.9.0
 
+# ── Semantic Tagging models ────────────────────────────────────────────────────
+# spaCy NER + fastText LID + KeyBERT + GLiNER + moondream
+RUN pip install --no-cache-dir \
+    "spacy>=3.7.0" \
+    "fasttext-wheel>=0.9.2" \
+    "keybert>=0.8.0" \
+    "gliner>=0.2.0" \
+    "moondream>=0.0.5" \
+    || echo "Semantic tagging deps install failed — will degrade gracefully"
+
+# Download spaCy English model (12.8 MB)
+RUN python -m spacy download en_core_web_sm \
+    || echo "spaCy model download failed — will skip NER"
+
+# Download fastText LID model (917 KB) to baked-in path
+RUN mkdir -p /data/models/fasttext && \
+    python -c "import urllib.request; urllib.request.urlretrieve('https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz', '/data/models/fasttext/lid.176.ftz')" \
+    || echo "fastText LID download failed — will skip language detection"
+
+# ── Restore pinned torch stack after semantic tagging installs ─────────────────
+# moondream/gliner pull in CPU torchvision which breaks the cu124 build.
+# Always reinstall from the cu124 index LAST to restore the correct .so files.
+RUN pip install --force-reinstall --no-cache-dir \
+    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cu124
+
 # ── ONNX Runtime deduplication ────────────────────────────────────────────────
 # Several packages (kokoro-onnx, insightface, streamingtts) pull in onnxruntime
 # (CPU) as a transitive dependency. Having BOTH onnxruntime (CPU) AND

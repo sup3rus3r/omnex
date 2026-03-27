@@ -34,6 +34,7 @@ class ObservationRequest(BaseModel):
     source:      str = "agent"        # logical source label (e.g. "claude", "cursor")
     agent_id:    str                   # must match a registered agent _id
     metadata:    dict = {}
+    broadcast:   bool = False          # if True, replicate to all active federation peers
 
 
 # ── Agent registration ────────────────────────────────────────────────────────
@@ -156,10 +157,47 @@ async def store_observation(req: ObservationRequest):
     # Increment agent observation count
     db["agents"].update_one({"_id": agent_oid}, {"$inc": {"observation_count": 1}})
 
+    broadcast_peers: list[str] = []
+
+    # Broadcast to federation peers (fire-and-forget)
+    if req.broadcast:
+        import httpx
+
+        peers = list(db["federation_peers"].find({"active": True}, {"_id": 0}))
+
+        async def _broadcast_to_peer(peer: dict) -> None:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    payload = {
+                        "text":     req.text,
+                        "source":   req.source,
+                        "agent_id": req.agent_id,
+                        "metadata": req.metadata,
+                        # broadcast=False on peers to avoid infinite fan-out
+                    }
+                    resp = await client.post(
+                        f"{peer['url'].rstrip('/')}/agents/observe",
+                        json=payload,
+                        headers={
+                            "X-API-Key":     peer["api_key"],
+                            "Content-Type":  "application/json",
+                        },
+                    )
+                    if resp.status_code == 200:
+                        broadcast_peers.append(peer["label"])
+                        log.info(f"[broadcast] replicated observation to peer {peer['label']}")
+                    else:
+                        log.warning(f"[broadcast] peer {peer['label']} returned {resp.status_code}")
+            except Exception as e:
+                log.warning(f"[broadcast] peer {peer['label']} failed: {e}")
+
+        await asyncio.gather(*[_broadcast_to_peer(p) for p in peers], return_exceptions=True)
+
     log.info(f"Agent {agent['name']} stored observation: {req.text[:80]}")
     return {
-        "chunk_id":   chunk_id,
-        "agent_id":   req.agent_id,
-        "agent_name": agent["name"],
-        "status":     "indexed",
+        "chunk_id":        chunk_id,
+        "agent_id":        req.agent_id,
+        "agent_name":      agent["name"],
+        "status":          "indexed",
+        "broadcast_peers": broadcast_peers,
     }

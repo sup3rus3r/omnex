@@ -20,13 +20,21 @@ export interface QueryResult {
   thumbnail_url: string | null
 }
 
+export interface ApplicableFilter {
+  label:     string
+  query:     string
+  file_type: string | null
+  date_from: string | null
+  date_to:   string | null
+}
+
 export interface QueryResponse {
-  query:                 string
-  results:               QueryResult[]
-  total:                 number
-  llm_response:          string | null
-  suggested_refinements: string[]
-  session_id:            string | null
+  query:               string
+  results:             QueryResult[]
+  total:               number
+  llm_response:        string | null
+  applicable_filters:  ApplicableFilter[]
+  session_id:          string | null
 }
 
 type NavView = 'recall' | 'ingest' | 'people' | 'timeline' | 'remote' | 'settings'
@@ -36,7 +44,7 @@ interface ChatMessage {
   content: string
   results?: QueryResult[]
   total?: number
-  refinements?: string[]
+  filters?: ApplicableFilter[]
   timestamp: Date
 }
 
@@ -277,10 +285,10 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
       setMessages((m) => [...m, {
         role:        'assistant',
         content:     '',
-        results:     data.results,
-        total:       data.total,
-        refinements: data.suggested_refinements,
-        timestamp:   new Date(),
+        results:   data.results,
+        total:     data.total,
+        filters:   data.applicable_filters,
+        timestamp: new Date(),
       }])
 
       // Use backend LLM response if available (already filtered + answered)
@@ -814,13 +822,13 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
                                     <ExpandableResults results={msg.results} total={msg.total ?? 0} onSelect={setSelectedChunk} selected={selectedChunk} />
                                   )}
 
-                                  {/* Refinement pills */}
-                                  {msg.refinements && msg.refinements.length > 0 && (
+                                  {/* Dynamic filter pills — only shown when LLM confirms they apply */}
+                                  {msg.filters && msg.filters.length > 0 && (
                                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                                      {msg.refinements.map((r) => (
+                                      {msg.filters.map((f) => (
                                         <button
-                                          key={r}
-                                          onClick={() => handleQuery(r)}
+                                          key={f.label}
+                                          onClick={() => handleQuery(f.query)}
                                           style={{
                                             padding: '5px 12px', borderRadius: 20,
                                             border: '1px solid #1a1a2e',
@@ -832,7 +840,7 @@ const messagesEndRef = useRef<HTMLDivElement>(null)
                                           onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = '#252540'; (e.currentTarget as HTMLButtonElement).style.color = '#a0a0b8' }}
                                           onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = '#1a1a2e'; (e.currentTarget as HTMLButtonElement).style.color = '#505068' }}
                                         >
-                                          → {r}
+                                          → {f.label}
                                         </button>
                                       ))}
                                     </div>
@@ -1484,15 +1492,69 @@ function PeoplePanel({ api }: { api: string }) {
 }
 
 /* ── Settings Panel ─────────────────────────────────────────────────────────── */
+interface FederationPeer {
+  peer_id:   string
+  url:       string
+  label:     string
+  trust:     string
+  active:    boolean
+  added_at:  string
+  last_seen: string | null
+}
+
 function SettingsPanel({ api, ttsVoice, onTtsVoiceChange, ttsEngine, onTtsEngineChange }: { api: string, ttsVoice: string, onTtsVoiceChange: (v: string) => void, ttsEngine: string, onTtsEngineChange: (v: string) => void }) {
-  const [cfg,     setCfg]     = useState<any>(null)
-  const [stats,   setStats]   = useState<any>(null)
-  const [copied,  setCopied]  = useState<string | null>(null)
+  const [cfg,       setCfg]       = useState<any>(null)
+  const [stats,     setStats]     = useState<any>(null)
+  const [copied,    setCopied]    = useState<string | null>(null)
+  const [peers,     setPeers]     = useState<FederationPeer[]>([])
+  const [peerUrl,   setPeerUrl]   = useState('')
+  const [peerKey,   setPeerKey]   = useState('')
+  const [peerLabel, setPeerLabel] = useState('')
+  const [peerSaving, setPeerSaving] = useState(false)
+  const [peerError,  setPeerError]  = useState<string | null>(null)
+  const [pingStatus, setPingStatus] = useState<Record<string, boolean | null>>({})
 
   useEffect(() => {
     fetch(`${api}/setup/config`).then(r => r.json()).then(setCfg).catch(() => {})
     fetch(`${api}/stats`).then(r => r.json()).then(setStats).catch(() => {})
+    loadPeers()
   }, [])
+
+  function loadPeers() {
+    fetch(`${api}/federation/peers`).then(r => r.json()).then(d => setPeers(d.peers || [])).catch(() => {})
+  }
+
+  async function addPeer() {
+    if (!peerUrl || !peerKey || !peerLabel) return
+    setPeerSaving(true); setPeerError(null)
+    try {
+      const res = await fetch(`${api}/federation/peers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: peerUrl, api_key: peerKey, label: peerLabel, trust: 'read' }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setPeerError(data.detail || 'Failed'); return }
+      setPeerUrl(''); setPeerKey(''); setPeerLabel('')
+      loadPeers()
+    } catch (e: any) {
+      setPeerError(e.message)
+    } finally {
+      setPeerSaving(false)
+    }
+  }
+
+  async function removePeer(id: string) {
+    await fetch(`${api}/federation/peers/${id}`, { method: 'DELETE' })
+    loadPeers()
+  }
+
+  async function pingPeer(id: string) {
+    setPingStatus(s => ({ ...s, [id]: null }))
+    const res = await fetch(`${api}/federation/peers/${id}/ping`)
+    const data = await res.json()
+    setPingStatus(s => ({ ...s, [id]: data.reachable }))
+  }
 
   function copy(key: string, value: string) {
     navigator.clipboard.writeText(value).then(() => {
@@ -1661,6 +1723,67 @@ function SettingsPanel({ api, ttsVoice, onTtsVoiceChange, ttsEngine, onTtsEngine
           </div>
         </Row>
         {!cfg?.auth_enabled && <EnvVar name="OMNEX_API_KEY" value="your_secret_key_here" copyKey="api_key" />}
+      </Section>
+
+      {/* Federation */}
+      <Section title="Federation — Peer Instances">
+        <div style={{ fontSize: 11, color: '#505068', marginBottom: 16 }}>
+          Connect peer Omnex instances. Federated search queries all peers simultaneously and merges results.
+        </div>
+
+        {/* Peer list */}
+        {peers.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#383850', marginBottom: 16 }}>No peers registered.</div>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            {peers.map(p => (
+              <div key={p.peer_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'rgba(124,106,247,0.04)', borderRadius: 6, border: '1px solid #1a1a2e', marginBottom: 6 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: p.active ? '#34d399' : '#383850', flexShrink: 0,
+                  ...(pingStatus[p.peer_id] === true ? { background: '#34d399', boxShadow: '0 0 5px #34d399' } : {}),
+                  ...(pingStatus[p.peer_id] === false ? { background: '#f87171' } : {}),
+                }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: '#e8e8f0' }}>{p.label}</div>
+                  <div style={{ fontSize: 10, color: '#383850', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.url}</div>
+                </div>
+                <button onClick={() => pingPeer(p.peer_id)} style={{ padding: '2px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #252540', color: '#505068', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit' }}>
+                  Ping
+                </button>
+                <button onClick={() => removePeer(p.peer_id)} style={{ padding: '2px 8px', borderRadius: 4, background: 'transparent', border: '1px solid #252540', color: '#505068', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit' }}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Add peer form */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input
+            placeholder="Label (e.g. Home server)"
+            value={peerLabel} onChange={e => setPeerLabel(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #1a1a2e', background: 'rgba(10,10,15,0.8)', color: '#e8e8f0', fontSize: 12, fontFamily: 'inherit', outline: 'none' }}
+          />
+          <input
+            placeholder="URL (e.g. https://abc.ngrok.io)"
+            value={peerUrl} onChange={e => setPeerUrl(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #1a1a2e', background: 'rgba(10,10,15,0.8)', color: '#e8e8f0', fontSize: 12, fontFamily: 'inherit', outline: 'none' }}
+          />
+          <input
+            placeholder="API key"
+            type="password"
+            value={peerKey} onChange={e => setPeerKey(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #1a1a2e', background: 'rgba(10,10,15,0.8)', color: '#e8e8f0', fontSize: 12, fontFamily: 'inherit', outline: 'none' }}
+          />
+          {peerError && <div style={{ fontSize: 11, color: '#f87171' }}>{peerError}</div>}
+          <button
+            onClick={addPeer}
+            disabled={peerSaving || !peerUrl || !peerKey || !peerLabel}
+            style={{ padding: '7px 16px', borderRadius: 6, border: '1px solid rgba(124,106,247,0.3)', background: 'rgba(124,106,247,0.1)', color: '#a78bfa', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', opacity: (peerSaving || !peerUrl || !peerKey || !peerLabel) ? 0.4 : 1 }}
+          >
+            {peerSaving ? 'Adding…' : '+ Add Peer'}
+          </button>
+        </div>
       </Section>
     </div>
   )
