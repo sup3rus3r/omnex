@@ -236,10 +236,16 @@ ANTHROPIC_MODEL=claude-sonnet-4-6
 **3. Start**
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 First build downloads PyTorch and all ML dependencies (~2–3 GB, ~10–15 minutes). Subsequent starts take seconds.
+
+> **Using a local LLM (Ollama)?** The Ollama container is opt-in — it only starts when you explicitly enable the `local` profile:
+> ```bash
+> docker compose --profile local up --build -d
+> ```
+> If you are using `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=openai`, skip the `--profile local` flag entirely. Ollama will not start.
 
 **4. Open**
 

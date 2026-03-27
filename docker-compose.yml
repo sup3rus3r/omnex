@@ -109,7 +109,10 @@ services:
         condition: service_healthy
 
   # ── Ollama (optional local LLM) ────────────────────────────────────────────
+  # Only started when LLM_PROVIDER=local. Run with:
+  #   docker compose --profile local up -d
   ollama:
+    profiles: [local]
     image: ollama/ollama:latest
     container_name: omnex-ollama
     restart: unless-stopped

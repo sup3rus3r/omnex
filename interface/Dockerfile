@@ -8,6 +8,8 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# Ensure public dir exists (Next.js doesn't require it but COPY will fail without it)
+RUN mkdir -p ./public
 # NEXT_PUBLIC_* vars are inlined at build time — must be passed as build args
 ARG NEXT_PUBLIC_API_URL=http://localhost:8001
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
