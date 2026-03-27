@@ -38,7 +38,8 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: "8000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     deploy:
       resources:
         reservations:
@@ -104,7 +105,8 @@ services:
       OMNEX_DATA_PATH: /data
       LOG_LEVEL: INFO
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       api:
         condition: service_healthy

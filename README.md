@@ -101,7 +101,13 @@ cd omnex
 
 **2. Configure**
 
-Create `.env` in the project root:
+Copy the example env file and fill in your LLM credentials:
+
+```bash
+cp .env.example .env
+```
+
+Then open `.env` and set at minimum:
 
 ```bash
 LLM_PROVIDER=anthropic
