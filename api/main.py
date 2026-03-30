@@ -20,7 +20,7 @@ def _patched_torch_load(f, *args, **kwargs):
     kwargs.setdefault("weights_only", False)
     return _orig_torch_load(f, *args, **kwargs)
 _torch.load = _patched_torch_load
-del _orig_torch_load, _patched_torch_load
+del _patched_torch_load  # keep _orig_torch_load — closure still references it
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

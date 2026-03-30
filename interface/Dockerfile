@@ -1,7 +1,10 @@
 # Omnex Interface — Next.js 14
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json* yarn.lock* pnpm-lock.yaml* ./
+# Copy only package.json — not the lockfile generated on Windows/macOS.
+# npm install regenerates a Linux-native lockfile with the correct SWC binaries,
+# avoiding the "lockfile missing swc dependencies" warning at build time.
+COPY package.json ./
 RUN npm install
 
 FROM node:20-alpine AS builder
