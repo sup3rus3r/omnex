@@ -7,7 +7,20 @@ Runs on 127.0.0.1:8000 by default.
 from __future__ import annotations
 
 import os
+import functools
 from contextlib import asynccontextmanager
+
+# Silence torch.load weights_only=False FutureWarning from resemble-perth.
+# The library uses pickle-based checkpoints; patch torch.load to default
+# weights_only=False explicitly so torch stops warning about future default change.
+import torch as _torch
+_orig_torch_load = _torch.load
+@functools.wraps(_orig_torch_load)
+def _patched_torch_load(f, *args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _orig_torch_load(f, *args, **kwargs)
+_torch.load = _patched_torch_load
+del _orig_torch_load, _patched_torch_load
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

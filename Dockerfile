@@ -74,6 +74,7 @@ RUN pip install --no-cache-dir chatterbox-tts --no-deps \
         "antlr4-python3-runtime==4.9.3" \
         conformer \
         diffusers \
+        peft \
         einops \
         librosa \
         omegaconf \
