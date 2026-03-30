@@ -339,20 +339,34 @@ def _run_ingestion(path: str, workers: int) -> None:
     _active_cancel.clear()
     _active_path = path
     try:
-        env = {**os.environ, "PYTHONPATH": "/app", "PYTHONUNBUFFERED": "1"}
+        # Derive project root from this file's location so PYTHONPATH is correct
+        # both inside Docker (/app) and when running locally from any directory.
+        project_root = str(Path(__file__).resolve().parents[2])
+        env = {
+            **os.environ,
+            "PYTHONPATH": project_root,
+            "PYTHONUNBUFFERED": "1",
+        }
         proc = subprocess.Popen(
             [sys.executable, "-m", "ingestion", "--path", path, "--workers", str(workers)],
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
+            cwd=project_root,
         )
+        output_lines: list[str] = []
         for line in proc.stdout:
-            log.info(f"[ingest] {line.decode(errors='replace').rstrip()}")
+            decoded = line.decode(errors="replace").rstrip()
+            output_lines.append(decoded)
+            log.info(f"[ingest] {decoded}")
             if _active_cancel.is_set():
                 proc.terminate()
                 break
+        stderr_output = proc.stderr.read().decode(errors="replace").strip()
         proc.wait()
         if proc.returncode not in (0, None, -15):
+            if stderr_output:
+                log.error(f"Ingestion subprocess stderr:\n{stderr_output}")
             log.error(f"Ingestion subprocess exited with code {proc.returncode}")
     except Exception:
         import traceback

@@ -115,6 +115,8 @@ ANTHROPIC_API_KEY=your_key_here
 ANTHROPIC_MODEL=claude-sonnet-4-6
 ```
 
+> **Important:** The root `.env` file is the single source of truth for all services — both the Python API and the Next.js UI read from it automatically via Docker Compose. You do **not** need a separate `interface/.env.local` when using Docker.
+
 **3. Start**
 
 ```bash
@@ -513,6 +515,12 @@ Anaconda is on your PATH. Open a plain PowerShell and restart the API. Or use Do
 ```
 .venv\Scripts\pip install insightface onnxruntime-gpu
 ```
+
+**"Ingestion subprocess exited with code 1"**
+The ingestion subprocess crashed on start-up — usually a missing env var or import error. The API now logs the full stderr output at the `ERROR` level immediately before the exit-code message. Check the API container logs (`docker compose logs api`) for the Python traceback. If running locally (not Docker) make sure `.env` exists in the repo root — `python-dotenv` loads it automatically in the subprocess.
+
+**"Anthropic API key is missing" in the chat interface**
+The `.env` file in the repo root was not present or `ANTHROPIC_API_KEY` was not set. Docker Compose reads the root `.env` and passes the key to both the API and the interface containers. Make sure you ran `cp .env.example .env` and filled in `ANTHROPIC_API_KEY` before building.
 
 **Ingestion stuck at "Running" forever**
 On Windows with Anaconda on PATH, sentence_transformers crashes silently. Use Docker.

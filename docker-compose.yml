@@ -70,8 +70,11 @@ services:
         condition: service_healthy
     ports:
       - '127.0.0.1:3007:3000'
+    # All LLM keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) and every other
+    # setting are loaded from the root .env file — the same file used by the
+    # API container. No separate interface/.env.local is needed.
     env_file:
-      - path: ./interface/.env.local
+      - path: .env
         required: false
 
   # ── Omnex FUSE filesystem ──────────────────────────────────────────────────

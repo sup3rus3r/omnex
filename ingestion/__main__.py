@@ -20,6 +20,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Load .env from the repo root so the subprocess works whether run locally or
+# inside Docker (dotenv is a no-op when variables are already in the environment).
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+except ImportError:
+    pass
+
 from ingestion.detector import FileType, detect, is_indexable
 from ingestion.hasher import hash_file
 from ingestion.router import route
