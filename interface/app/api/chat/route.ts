@@ -60,14 +60,16 @@ export async function POST(req: Request) {
     }
 
     // Local — Ollama via OpenAI-compatible API
-    const openai = createOpenAI({
+    // Use .chat() explicitly — calling the provider directly uses the Responses API
+    // which Ollama does not implement. .chat() targets /v1/chat/completions instead.
+    const ollama = createOpenAI({
       baseURL: process.env.LOCAL_LLM_HOST
         ? `${process.env.LOCAL_LLM_HOST}/v1`
         : 'http://localhost:11434/v1',
       apiKey: 'ollama',
     })
     const result = streamText({
-      model:           openai(process.env.LOCAL_LLM_MODEL || 'phi3:mini'),
+      model:           ollama.chat(process.env.LOCAL_LLM_MODEL || 'phi3:mini'),
       system:          SYSTEM_PROMPT,
       messages,
     })
